@@ -1,5 +1,5 @@
 # pasld
-Pascal Linker(pasld)
+Pascal Linker(pasld),Support x64,aarch64,riscv64,loongarch64 architectures.
 ## How to install 
 First,install fpc(free pascal compiler) or fpc and lazarus combined with its source code.  
 Second,using installed fpc by you to compile the pascal linker source code and run build.sh to build it.  
