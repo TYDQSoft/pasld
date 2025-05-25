@@ -124,7 +124,7 @@ begin
 end;
 procedure pasld_show_help;
 begin
- writeln('pasld(pascal linker) Version 0.0.1');
+ writeln('pasld(pascal linker) Version 0.0.2');
  writeln('Now show the help:');
  writeln('Template:pasld/pasld.exe [parameters]');
  writeln('Vaild parameters:');
@@ -161,6 +161,12 @@ begin
  writeln('             The option to generate executable file.');
  writeln('--dynamic-library');
  writeln('             The option to generate dynamic library file.');
+ writeln('--efi-application');
+ writeln('             The option to generate UEFI Application file.');
+ writeln('--efi-boot-driver');
+ writeln('             The option to generate UEFI Boot Service Driver file.');
+ writeln('--efi-runtime-driver');
+ writeln('             The option to generate UEFI Runtime Service Driver file.');
  writeln('--entry-point [entry point name]');
  writeln('             The entry point of the generated file.');
  writeln('--linker-heap-size [specified size]');
@@ -275,7 +281,7 @@ begin
     end
    else if(LowerCase(ParamStr(i))='--alignment') then
     begin
-     if(ParamStr(i)='Page') then Result.align:=$1000
+     if(LowerCase(ParamStr(i+1))='page') then Result.align:=$1000
      else Result.align:=StrToInt(ParamStr(i+1));
      inc(i);
     end
@@ -310,6 +316,18 @@ begin
    else if(LowerCase(ParamStr(i))='--dynamic-library') and (Result.ExecutableType=0) then
     begin
      Result.ExecutableType:=2;
+    end
+   else if(LowerCase(ParamStr(i))='--efi-application') and (Result.ExecutableType=0) then
+    begin
+     Result.ExecutableType:=3;
+    end
+   else if(LowerCase(ParamStr(i))='--efi-boot-driver') and (Result.ExecutableType=0) then
+    begin
+     Result.ExecutableType:=4;
+    end
+   else if(LowerCase(ParamStr(i))='--efi-runtime-driver') and (Result.ExecutableType=0) then
+    begin
+     Result.ExecutableType:=5;
     end
    else if(LowerCase(ParamStr(i))='--entry-point') then
     begin
@@ -376,13 +394,25 @@ begin
   end;
  writeln('Reading Files......');
  objlist:=ld_generate_file_list(dynstrarray(param.filename));
- writeln('Linking ELF Files......');
- handlefile:=ld_link_file(objlist,param.EntryName,param.SmartLinking);
- writeln('Generating ELF Files......');
- ld_handle_elf_file(param.OutputFileName,handlefile,param.align,
- param.DebugFrame,(3-param.ExecutableType)*2,param.NoDefaultLibrary,not param.ReserveSymbol,
- param.DynamicLinker,param.Signature);
- writeln('File kerneltest.elf generated!');
+ if(param.ExecutableType<=2) then
+  begin
+   writeln('Linking ELF Files......');
+   handlefile:=ld_link_file(objlist,param.EntryName,param.SmartLinking);
+   writeln('Generating ELF Files......');
+   ld_handle_elf_file(param.OutputFileName,handlefile,param.align,
+   param.DebugFrame,(3-param.ExecutableType)*2,param.NoDefaultLibrary,not param.ReserveSymbol,
+   param.DynamicLinker,param.Signature);
+   writeln('File '+param.OutputFileName+' generated!');
+  end
+ else
+  begin
+   writeln('Linking ELF Files......');
+   handlefile:=ld_link_file(objlist,param.EntryName,param.SmartLinking);
+   writeln('Generating EFI Files......');
+   ld_handle_elf_file_to_efi_file(param.OutputFileName,handlefile,param.align,
+   param.DebugFrame,param.ExecutableType*2,not param.ReserveSymbol);
+   writeln('File '+param.OutputFileName+' generated!');
+  end;
  FreeMem(ptr);
 end;
 var param:pasld_param;

@@ -123,6 +123,7 @@ type natuint=SizeUint;
                             end;
      ld_object_file_temp_symbol_table=packed record
                                       SymbolQuotedByMain:array of boolean;
+                                      SymbolFileIndex:array of Natuint;
                                       SymbolSection:array of string;
                                       SymbolName:array of string;
                                       SymbolBinding:array of byte;
@@ -177,22 +178,22 @@ type natuint=SizeUint;
                           SecSize:array of Natuint;
                           SecCount:word;
                           SymTable:ld_object_file_symbol_table;
-                          {For ELF Files Only}
+                          {Can be used in ELF or EFI File}
                           GotAddr:Natuint;
                           GotTable:array of Natuint;
                           GotSymbol:array of string;
+                          Rela:ld_object_file_rela_table;
+                          {For ELF Files Only}
                           GotPltAddr:Natuint;
                           GotPltTable:array of Natuint;
                           GotPltSymbol:array of string;
                           RelaAddr:Natuint;
-                          Rela:ld_object_file_rela_table;
                           DynAddr:Natuint;
                           DynSym:ld_object_file_symbol_table;
                           Dynamic32:array of elf32_dynamic_entry;
                           Dynamic64:array of elf64_dynamic_entry;
                           HashAddr:Natuint;
                           Hash:ld_hash;
-                          {For PE Files Only}
                           end;
      ld_elf_writer_32=packed record
                       Header:elf32_header;
@@ -206,13 +207,18 @@ type natuint=SizeUint;
                       Content:array of Pointer;
                       SectionHeader:array of elf64_section_header;
                       end;
-     ld_output_file=packed record
-                    Content:Pbyte;
-                    Size:Natuint;
-                    case Boolean of
-                    True:(fobjptr:elf_object_file;);
-                    False:(fptr:elf_file;);
-                    end;
+     ld_pe_relocation_table=packed record
+                            Block:pe_image_base_relocation_block;
+                            item:array of pe_image_base_relocation_item;
+                            end;
+     ld_pe_writer=packed record
+                  DosHeader:pe_dos_header;
+                  DosStub:array[1..64] of byte;
+                  PeHeader:pe_image_header;
+                  DataHeader:array of pe_data_directory;
+                  SectionHeader:array of pe_image_section_header;
+                  RelocationTable:array of ld_pe_relocation_table;
+                  end;
      ld_aarch64_add_or_sub_immediate=bitpacked record
                                      Rn:0..31;
                                      Rd:0..31;
@@ -294,6 +300,10 @@ const ld_format_none=0;
       ld_format_static_library=1;
       ld_format_dynamic_library=2;
       ld_format_executable_pie=4;
+      ld_format_efi_application=6;
+      ld_format_efi_boot_driver=8;
+      ld_format_efi_runtime_driver=10;
+      ld_format_efi_rom=12;
       ld_aarch64_add_or_sub_fixed_value=$22;
       ld_aarch64_ld_or_st_immediate_9_post_index=1;
       ld_aarch64_ld_or_st_immediate_9_pre_index=3;
@@ -308,6 +318,8 @@ function ld_link_file(objlist:ld_object_file_list;EntryName:string;SmartLinking:
 procedure ld_handle_elf_file(fn:string;var ldfile:ld_object_file_stage_2;align:dword;debugframe:boolean;
 format:byte;nodefaultlibrary:boolean;stripsymbol:boolean;dynamiclinker:string;
 signature:string);
+procedure ld_handle_elf_file_to_efi_file(fn:string;var ldfile:ld_object_file_stage_2;align:dword;
+debugframe:boolean;format:byte;stripsymbol:boolean);
 
 implementation
 
@@ -723,22 +735,7 @@ var fs:TFileStream;
 begin
  fs:=TFileStream.Create(fn,fmOpenRead);
  fs.Seek(pos-1,0);
- if(bufsize-bufsize shr 3 shl 3=0) then
-  begin
-   for i:=1 to bufsize shr 3 do fs.Read(Pqword(@buf+(i-1) shl 3)^,8);
-  end
- else if(bufsize-bufsize shr 2 shl 2=0) then
-  begin
-   for i:=1 to bufsize shr 2 do fs.Read(Pdword(@buf+(i-1) shl 2)^,4);
-  end
- else if(bufsize-bufsize shr 1 shl 1=0) then
-  begin
-   for i:=1 to bufsize shr 1 do fs.Read(Pword(@buf+(i-1) shl 1)^,2);
-  end
- else
-  begin
-   for i:=1 to bufsize do fs.Read(Pbyte(@buf+i-1)^,1);
-  end;
+ fs.Read(buf,bufsize);
  fs.Free;
 end;
 procedure ld_io_write(fn:String;pos:natuint;const buf;bufsize:natuint);
@@ -748,22 +745,7 @@ begin
  if(FileExists(fn)) then fs:=TFileStream.Create(fn,fmOpenWrite)
  else fs:=TFileStream.Create(fn,fmCreate);
  fs.Seek(pos-1,0);
- if(bufsize-bufsize shr 3 shl 3=0) then
-  begin
-   for i:=1 to bufsize shr 3 do fs.Write(Pqword(@buf+(i-1) shl 3)^,8);
-  end
- else if(bufsize-bufsize shr 2 shl 2=0) then
-  begin
-   for i:=1 to bufsize shr 2 do fs.Write(Pdword(@buf+(i-1) shl 2)^,4);
-  end
- else if(bufsize-bufsize shr 1 shl 1=0) then
-  begin
-   for i:=1 to bufsize shr 1 do fs.Write(Pword(@buf+(i-1) shl 1)^,2);
-  end
- else
-  begin
-   for i:=1 to bufsize do fs.Write(Pbyte(@buf+i-1)^,1);
-  end;
+ fs.Write(buf,bufsize);
  fs.Free;
 end;
 function ld_io_get_size(fn:string):dword;
@@ -904,13 +886,13 @@ begin
  i:=1;
  LdDynamicLibrary.Count:=length(fn);
  LdDynamicLibrary.StringTotalLength:=0;
+ SetLength(ldDynamicLibrary.Name,length(fn));
+ SetLength(ldDynamicLibrary.NameLength,length(fn));
+ SetLength(ldDynamicLibrary.NamePosition,length(fn));
  while(i<=length(fn))do
   begin
-   SetLength(ldDynamicLibrary.Name,i);
    LdDynamicLibrary.Name[i-1]:=fn[i-1];
-   SetLength(ldDynamicLibrary.NameLength,i);
    LdDynamicLibrary.NameLength[i-1]:=length(fn[i-1]);
-   SetLength(ldDynamicLibrary.NamePosition,i);
    LdDynamicLibrary.NamePosition[i-1]:=LdDynamicLibrary.StringTotalLength;
    LdDynamicLibrary.StringTotalLength:=LdDynamicLibrary.StringTotalLength+length(fn[i-1])+1;
    inc(i);
@@ -1186,38 +1168,14 @@ begin
  filelist.Count:=0;
 end;
 procedure ld_handle_symbol_table(var middlelist:ld_object_file_temporary;EntryName:string;
-linked:boolean;SmartLinking:boolean);
+SmartLinking:boolean);
 var i,j,k:Natuint;
 begin
- if(linked=false) then
-  begin
-   for i:=1 to middlelist.symTable.SymbolCount do
-    begin
-     if(middlelist.symTable.SymbolIndex[i-1]=elf_section_header_index_undefined) then
-      begin
-       for j:=1 to middlelist.symTable.SymbolCount do
-        begin
-         if(i=j) then continue;
-         if(middlelist.symTable.SymbolSection[j-1]='') then continue;
-         if(middlelist.SymTable.SymbolType[j-1]=0) then continue;
-         if(middlelist.symTable.SymbolIndex[i-1]=$FFFF) then break;
-         if(middlelist.symTable.SymbolName[j-1]=middlelist.symTable.SymbolName[i-1]) then
-          begin
-           middlelist.SymTable.SymbolType[i-1]:=middlelist.SymTable.SymbolType[j-1];
-           middlelist.symTable.SymbolSection[i-1]:=middlelist.symTable.SymbolSection[j-1];
-           middlelist.symTable.SymbolIndex[i-1]:=$FFFF;
-          end;
-        end;
-      end;
-    end;
-  end;
- if(SmartLinking=false) then exit;
  for i:=1 to middlelist.symTable.SymbolCount do
   begin
    if(middlelist.symTable.SymbolName[i-1]=EntryName)
    and (middlelist.SymTable.SymbolQuotedByMain[i-1]=false)
-   and (middlelist.symTable.SymbolSection[i-1]<>'')
-   and (middlelist.SymTable.SymbolIndex[i-1]<$FFFF) then
+   and (middlelist.symTable.SymbolSection[i-1]<>'') then
     begin
      middlelist.symTable.SymbolQuotedByMain[i-1]:=true;
      for j:=1 to middlelist.SymTable.SymbolCount do
@@ -1226,7 +1184,6 @@ begin
        if(middlelist.SymTable.SymbolName[i-1]<>middlelist.SymTable.SymbolName[j-1])
        and(middlelist.SymTable.SymbolSection[i-1]=middlelist.SymTable.SymbolSection[j-1])
        and(middlelist.SymTable.SymbolValue[i-1]=middlelist.SymTable.SymbolValue[j-1])
-       and(middlelist.SymTable.SymbolIndex[j-1]<$FFFF)
        and(middlelist.SymTable.SymbolQuotedByMain[j-1]=false) then
         begin
          middlelist.SymTable.SymbolQuotedByMain[j-1]:=true;
@@ -1239,8 +1196,7 @@ begin
          for k:=1 to middlelist.SecRel[j-1].SymCount do
           begin
            if(middlelist.SecRel[j-1].SymName[k-1]='') then continue;
-           ld_handle_symbol_table(middlelist,middlelist.SecRel[j-1].SymName[k-1],true
-           ,SmartLinking);
+           ld_handle_symbol_table(middlelist,middlelist.SecRel[j-1].SymName[k-1],SmartLinking);
           end;
         end;
       end;
@@ -1251,8 +1207,7 @@ begin
          for k:=1 to middlelist.SecRela[j-1].SymCount do
           begin
            if(middlelist.SecRela[j-1].SymName[k-1]='') then continue;
-           ld_handle_symbol_table(middlelist,middlelist.SecRela[j-1].SymName[k-1],true
-           ,SmartLinking);
+           ld_handle_symbol_table(middlelist,middlelist.SecRela[j-1].SymName[k-1],SmartLinking);
           end;
         end;
       end;
@@ -1306,19 +1261,7 @@ begin
        startaddr:=(objlist.item[i-1].Ptr.CntPtr+j-1)^.b;
        TempList1.ObjFile[i-1].SecName[j-1]:=elf_get_name(
        objlist.item[i-1].Ptr.shstrtabptr,Pelf32_section_header(ptr.sec32ptr+j-1)^.section_header_name);
-       if(TempList1.ObjFile[i-1].SecName[j-1]='.bss') or
-       (TempList1.ObjFile[i-1].SecName[j-1]='.text') or
-       (TempList1.ObjFile[i-1].SecName[j-1]='.data') or
-       (TempList1.ObjFile[i-1].SecName[j-1]='.rodata') or
-       (TempList1.ObjFile[i-1].SecName[j-1]='.init') or
-       (TempList1.ObjFile[i-1].SecName[j-1]='.init_array') or
-       (TempList1.ObjFile[i-1].SecName[j-1]='.fini') or
-       (TempList1.ObjFile[i-1].SecName[j-1]='.fini_array') or
-       (TempList1.ObjFile[i-1].SecName[j-1]='.tdata') or
-       (TempList1.ObjFile[i-1].SecName[j-1]='.tbss') then
-        begin
-         TempList1.ObjFile[i-1].SecName[j-1]:=TempList1.ObjFile[i-1].SecName[j-1]+'.'+IntToStr(i);
-        end;
+       TempList1.ObjFile[i-1].SecName[j-1]:=TempList1.ObjFile[i-1].SecName[j-1]+'.'+IntToStr(i);
        TempList1.ObjFile[i-1].SecType[j-1]:=
        Pelf32_section_header(ptr.sec32ptr+j-1)^.section_header_type;
        TempList1.ObjFile[i-1].SecSize[j-1]:=
@@ -1344,7 +1287,10 @@ begin
          templist1.ObjFile[i-1].SecRel[templist1.ObjFile[i-1].SecRelCount-1].SymSecName:=
          elf_get_name(objlist.item[i-1].Ptr.shstrtabptr,
          Pelf32_section_header(ptr.sec32ptr+
-         Pelf32_section_header(ptr.sec32ptr+j-1)^.section_header_info-1)^.section_header_name);;
+         Pelf32_section_header(ptr.sec32ptr+j-1)^.section_header_info-1)^.section_header_name);
+         templist1.ObjFile[i-1].SecRel[templist1.ObjFile[i-1].SecRelCount-1].SymSecName:=
+         templist1.ObjFile[i-1].SecRel[templist1.ObjFile[i-1].SecRelCount-1].SymSecName+
+         '.'+IntToStr(i);
          templist1.ObjFile[i-1].SecRel[templist1.ObjFile[i-1].SecRelCount-1].SecIndex:=j-1;
          SetLength(templist1.ObjFile[i-1].SecRel[templist1.ObjFile[i-1].SecRelCount-1].Symbol,
          TempList1.ObjFile[i-1].SecSize[j-1] shr 3);
@@ -1373,10 +1319,13 @@ begin
          tempptr:=startaddr; offset:=0;
          inc(templist1.ObjFile[i-1].SecRelaCount);
          SetLength(templist1.ObjFile[i-1].SecRela,templist1.ObjFile[i-1].SecRelaCount);
-         templist1.ObjFile[i-1].SecRela[templist1.ObjFile[i-1].SecRelCount-1].SymSecName:=
+         templist1.ObjFile[i-1].SecRela[templist1.ObjFile[i-1].SecRelaCount-1].SymSecName:=
          elf_get_name(objlist.item[i-1].Ptr.shstrtabptr,
          Pelf32_section_header(ptr.sec32ptr+
          Pelf32_section_header(ptr.sec32ptr+j-1)^.section_header_info-1)^.section_header_name);
+         templist1.ObjFile[i-1].SecRela[templist1.ObjFile[i-1].SecRelaCount-1].SymSecName:=
+         templist1.ObjFile[i-1].SecRela[templist1.ObjFile[i-1].SecRelaCount-1].SymSecName+
+         '.'+IntToStr(i);
          templist1.ObjFile[i-1].SecRela[templist1.ObjFile[i-1].SecRelaCount-1].SecIndex:=j-1;
          SetLength(templist1.ObjFile[i-1].SecRela[templist1.ObjFile[i-1].SecRelaCount-1].Symbol,
          TempList1.ObjFile[i-1].SecSize[j-1] div 12);
@@ -1427,17 +1376,6 @@ begin
              elf_get_name(objlist.item[i-1].Ptr.shstrtabptr,
              Pelf32_section_header(ptr.sec32ptr+
              Pelf32_symbol_table_entry(tempptr+offset)^.symbol_section_index)^.section_header_name);
-             if(TempList1.ObjFile[i-1].SymTable.SymbolSection[k-1]='.bss')
-             or(TempList1.ObjFile[i-1].SymTable.SymbolSection[k-1]='.data')
-             or(TempList1.ObjFile[i-1].SymTable.SymbolSection[k-1]='.rodata')
-             or(TempList1.ObjFile[i-1].SymTable.SymbolSection[k-1]='.text')
-             or(TempList1.ObjFile[i-1].SymTable.SymbolSection[k-1]='.init')
-             or(TempList1.ObjFile[i-1].SymTable.SymbolSection[k-1]='.init_array')
-             or(TempList1.ObjFile[i-1].SymTable.SymbolSection[k-1]='.fini')
-             or(TempList1.ObjFile[i-1].SymTable.SymbolSection[k-1]='.fini_array')
-             or(TempList1.ObjFile[i-1].SymTable.SymbolSection[k-1]='.tdata')
-             or(TempList1.ObjFile[i-1].SymTable.SymbolSection[k-1]='.tbss')
-             then
              TempList1.ObjFile[i-1].SymTable.SymbolSection[k-1]:=
              TempList1.ObjFile[i-1].SymTable.SymbolSection[k-1]+'.'+IntToStr(i);
             end
@@ -1495,19 +1433,7 @@ begin
        startaddr:=(objlist.item[i-1].Ptr.CntPtr+j-1)^.b;
        TempList1.ObjFile[i-1].SecName[j-1]:=elf_get_name(
        objlist.item[i-1].Ptr.shstrtabptr,Pelf64_section_header(ptr.sec64ptr+j-1)^.section_header_name);
-       if(TempList1.ObjFile[i-1].SecName[j-1]='.bss') or
-       (TempList1.ObjFile[i-1].SecName[j-1]='.text') or
-       (TempList1.ObjFile[i-1].SecName[j-1]='.data') or
-       (TempList1.ObjFile[i-1].SecName[j-1]='.rodata') or
-       (TempList1.ObjFile[i-1].SecName[j-1]='.init') or
-       (TempList1.ObjFile[i-1].SecName[j-1]='.init_array') or
-       (TempList1.ObjFile[i-1].SecName[j-1]='.fini') or
-       (TempList1.ObjFile[i-1].SecName[j-1]='.fini_array') or
-       (TempList1.ObjFile[i-1].SecName[j-1]='.tdata') or
-       (TempList1.ObjFile[i-1].SecName[j-1]='.tbss') then
-        begin
-         TempList1.ObjFile[i-1].SecName[j-1]:=TempList1.ObjFile[i-1].SecName[j-1]+'.'+IntToStr(i);
-        end;
+       TempList1.ObjFile[i-1].SecName[j-1]:=TempList1.ObjFile[i-1].SecName[j-1]+'.'+IntToStr(i);
        TempList1.ObjFile[i-1].SecType[j-1]:=
        Pelf64_section_header(ptr.sec64ptr+j-1)^.section_header_type;
        TempList1.ObjFile[i-1].SecSize[j-1]:=
@@ -1534,6 +1460,9 @@ begin
          elf_get_name(objlist.item[i-1].Ptr.shstrtabptr,
          Pelf64_section_header(ptr.sec64ptr+
          Pelf64_section_header(ptr.sec64ptr+j-1)^.section_header_info)^.section_header_name);
+         templist1.ObjFile[i-1].SecRel[templist1.ObjFile[i-1].SecRelCount-1].SymSecName:=
+         templist1.ObjFile[i-1].SecRel[templist1.ObjFile[i-1].SecRelCount-1].SymSecName
+         +'.'+IntToStr(i);
          templist1.ObjFile[i-1].SecRel[templist1.ObjFile[i-1].SecRelCount-1].SecIndex:=j-1;
          SetLength(templist1.ObjFile[i-1].SecRel[templist1.ObjFile[i-1].SecRelCount-1].Symbol,
          TempList1.ObjFile[i-1].SecSize[j-1] shr 4);
@@ -1566,6 +1495,9 @@ begin
          elf_get_name(objlist.item[i-1].Ptr.shstrtabptr,
          Pelf64_section_header(ptr.sec64ptr+
          Pelf64_section_header(ptr.sec64ptr+j-1)^.section_header_info)^.section_header_name);
+         templist1.ObjFile[i-1].SecRela[templist1.ObjFile[i-1].SecRelaCount-1].SymSecName:=
+         templist1.ObjFile[i-1].SecRela[templist1.ObjFile[i-1].SecRelaCount-1].SymSecName
+         +'.'+IntToStr(i);
          templist1.ObjFile[i-1].SecRela[templist1.ObjFile[i-1].SecRelaCount-1].SecIndex:=j-1;
          SetLength(templist1.ObjFile[i-1].SecRela[templist1.ObjFile[i-1].SecRelaCount-1].Symbol,
          TempList1.ObjFile[i-1].SecSize[j-1] div 24);
@@ -1616,16 +1548,6 @@ begin
              elf_get_name(objlist.item[i-1].Ptr.shstrtabptr,
              Pelf64_section_header(ptr.sec64ptr+
              Pelf64_symbol_table_entry(tempptr+offset)^.symbol_section_index)^.section_header_name);
-             if(TempList1.ObjFile[i-1].SymTable.SymbolSection[k-1]='.bss')
-             or(TempList1.ObjFile[i-1].SymTable.SymbolSection[k-1]='.data')
-             or(TempList1.ObjFile[i-1].SymTable.SymbolSection[k-1]='.rodata')
-             or(TempList1.ObjFile[i-1].SymTable.SymbolSection[k-1]='.text')
-             or(TempList1.ObjFile[i-1].SymTable.SymbolSection[k-1]='.init')
-             or(TempList1.ObjFile[i-1].SymTable.SymbolSection[k-1]='.init_array')
-             or(TempList1.ObjFile[i-1].SymTable.SymbolSection[k-1]='.fini')
-             or(TempList1.ObjFile[i-1].SymTable.SymbolSection[k-1]='.fini_array')
-             or(TempList1.ObjFile[i-1].SymTable.SymbolSection[k-1]='.tdata')
-             or(TempList1.ObjFile[i-1].SymTable.SymbolSection[k-1]='.tbss') then
              TempList1.ObjFile[i-1].SymTable.SymbolSection[k-1]:=
              TempList1.ObjFile[i-1].SymTable.SymbolSection[k-1]+'.'+IntToStr(i);
             end
@@ -1665,28 +1587,6 @@ begin
         end;
       end;
     end;
-   for j:=1 to templist1.ObjFile[i-1].SecRelCount do
-    begin
-     for k:=1 to templist1.ObjFile[i-1].SecRel[j-1].SymCount do
-      begin
-       if(templist1.ObjFile[i-1].SecRel[j-1].Symbol[k-1]=0) then
-       templist1.ObjFile[i-1].SecRel[j-1].SymName[k-1]:=''
-       else
-       templist1.ObjFile[i-1].SecRel[j-1].SymName[k-1]:=
-       TempList1.ObjFile[i-1].SymTable.SymbolName[templist1.ObjFile[i-1].SecRel[j-1].Symbol[k-1]-1];
-      end;
-    end;
-   for j:=1 to templist1.ObjFile[i-1].SecRelaCount do
-    begin
-     for k:=1 to templist1.ObjFile[i-1].SecRela[j-1].SymCount do
-      begin
-       if(templist1.ObjFile[i-1].SecRela[j-1].Symbol[k-1]=0) then
-       templist1.ObjFile[i-1].SecRela[j-1].SymName[k-1]:=''
-       else
-       templist1.ObjFile[i-1].SecRela[j-1].SymName[k-1]:=
-       TempList1.ObjFile[i-1].SymTable.SymbolName[templist1.ObjFile[i-1].SecRela[j-1].Symbol[k-1]-1];
-      end;
-    end;
   end;
  {Generate the relocation and relative adjust for sections}
  middlelist.SecRelCount:=0; middlelist.SecRelaCount:=0; middlelist.SymTable.SymbolCount:=0;
@@ -1697,8 +1597,8 @@ begin
     begin
      inc(middlelist.SecRelCount);
      SetLength(middlelist.SecRel,middlelist.SecRelCount);
-     middlelist.SecRel[middlelist.SecRelCount-1].SymSecName:=
-     templist1.ObjFile[i-1].SecRel[j-1].SymSecName;
+     middlelist.SecRela[middlelist.SecRelaCount-1].SymSecName:=
+     templist1.ObjFile[i-1].SecRela[j-1].SymSecName;
      middlelist.SecRel[middlelist.SecRelCount-1].SecIndex:=0;
      middlelist.SecRel[middlelist.SecRelCount-1].SymCount:=
      templist1.ObjFile[i-1].SecRel[j-1].SymCount;
@@ -1714,8 +1614,11 @@ begin
       begin
        middlelist.SecRel[middlelist.SecRelCount-1].SymOffset[k-1]:=
        templist1.ObjFile[i-1].SecRel[j-1].SymOffset[k-1];
-       middlelist.SecRel[middlelist.SecRelCount-1].SymName[k-1]:=
-       templist1.ObjFile[i-1].SecRel[j-1].SymName[k-1];
+       if(templist1.ObjFile[i-1].SecRel[j-1].Symbol[k-1]=0) then
+       middlelist.SecRel[middlelist.SecRelaCount-1].SymName[k-1]:=''
+       else
+       middlelist.SecRel[middlelist.SecRelaCount-1].SymName[k-1]:=
+       TempList1.ObjFile[i-1].SymTable.SymbolName[templist1.ObjFile[i-1].SecRel[j-1].Symbol[k-1]-1];
        middlelist.SecRel[middlelist.SecRelCount-1].Symbol[k-1]:=
        templist1.ObjFile[i-1].SecRel[j-1].Symbol[k-1];
        middlelist.SecRel[middlelist.SecRelCount-1].SymType[k-1]:=
@@ -1749,8 +1652,11 @@ begin
       begin
        middlelist.SecRela[middlelist.SecRelaCount-1].SymOffset[k-1]:=
        templist1.ObjFile[i-1].SecRela[j-1].SymOffset[k-1];
+       if(templist1.ObjFile[i-1].SecRela[j-1].Symbol[k-1]=0) then
+       middlelist.SecRela[middlelist.SecRelaCount-1].SymName[k-1]:=''
+       else
        middlelist.SecRela[middlelist.SecRelaCount-1].SymName[k-1]:=
-       templist1.ObjFile[i-1].SecRela[j-1].SymName[k-1];
+       TempList1.ObjFile[i-1].SymTable.SymbolName[templist1.ObjFile[i-1].SecRela[j-1].Symbol[k-1]-1];
        middlelist.SecRela[middlelist.SecRelaCount-1].Symbol[k-1]:=
        templist1.ObjFile[i-1].SecRela[j-1].Symbol[k-1];
        middlelist.SecRela[middlelist.SecRelaCount-1].SymType[k-1]:=
@@ -1765,7 +1671,10 @@ begin
   begin
    for j:=1 to templist1.ObjFile[i-1].SymTable.SymbolCount do
     begin
-     if(templist1.ObjFile[i-1].SymTable.SymbolName[j-1]='') then continue;
+     if(templist1.ObjFile[i-1].SymTable.SymbolName[j-1]='')
+     or (templist1.ObjFile[i-1].SymTable.SymbolIndex[j-1]>Word($FFF0))
+     or ((templist1.ObjFile[i-1].SymTable.SymbolType[j-1]=0)
+     and (templist1.ObjFile[i-1].SymTable.SymbolIndex[j-1]=0)) then continue;
      inc(middlelist.SymTable.SymbolCount);
      SetLength(middlelist.SymTable.SymbolQuotedByMain,middlelist.SymTable.SymbolCount);
      SetLength(middlelist.SymTable.SymbolBinding,middlelist.SymTable.SymbolCount);
@@ -1776,6 +1685,7 @@ begin
      SetLength(middlelist.SymTable.SymbolType,middlelist.SymTable.SymbolCount);
      SetLength(middlelist.SymTable.SymbolValue,middlelist.SymTable.SymbolCount);
      SetLength(middlelist.SymTable.SymbolVisible,middlelist.SymTable.SymbolCount);
+     SetLength(middlelist.SymTable.SymbolFileIndex,middlelist.SymTable.SymbolCount);
      middlelist.SymTable.SymbolQuotedByMain[middlelist.SymTable.SymbolCount-1]:=false;
      middlelist.SymTable.SymbolBinding[middlelist.SymTable.SymbolCount-1]:=
      templist1.ObjFile[i-1].SymTable.SymbolBinding[j-1];
@@ -1795,51 +1705,23 @@ begin
      templist1.ObjFile[i-1].SymTable.SymbolVisible[j-1];
      middlelist.SymTable.SymbolValue[middlelist.SymTable.SymbolCount-1]:=
      templist1.ObjFile[i-1].SymTable.SymbolValue[j-1];
-     {Delete the repeated Symbols}
-     k:=1;
-     while(k<=middlelist.SymTable.SymbolCount-1)do
-      begin
-       if(middlelist.SymTable.SymbolSection[middlelist.SymTable.SymbolCount-1]=
-       middlelist.SymTable.SymbolSection[k-1]) and
-       (middlelist.SymTable.SymbolName[middlelist.SymTable.SymbolCount-1]=
-       middlelist.SymTable.SymbolName[k-1]) and
-       (middlelist.SymTable.SymbolValue[middlelist.SymTable.SymbolCount-1]=
-       middlelist.SymTable.SymbolValue[k-1]) then
-        begin
-         dec(middlelist.SymTable.SymbolCount);
-         SetLength(middlelist.SymTable.SymbolQuotedByMain,middlelist.SymTable.SymbolCount);
-         SetLength(middlelist.SymTable.SymbolSection,middlelist.SymTable.SymbolCount);
-         SetLength(middlelist.SymTable.SymbolValue,middlelist.SymTable.SymbolCount);
-         SetLength(middlelist.SymTable.SymbolSize,middlelist.SymTable.SymbolCount);
-         SetLength(middlelist.SymTable.SymbolBinding,middlelist.SymTable.SymbolCount);
-         SetLength(middlelist.SymTable.SymbolIndex,middlelist.SymTable.SymbolCount);
-         SetLength(middlelist.SymTable.SymbolVisible,middlelist.SymTable.SymbolCount);
-         SetLength(middlelist.SymTable.SymbolName,middlelist.SymTable.SymbolCount);
-         SetLength(middlelist.SymTable.SymbolType,middlelist.SymTable.SymbolCount);
-         break;
-        end
-       else inc(k);
-      end;
+     middlelist.SymTable.SymbolFileIndex[middlelist.SymTable.SymbolCount-1]:=i;
     end;
   end;
- ld_handle_symbol_table(middlelist,EntryName,false,SmartLinking);
+ if(SmartLinking) then ld_handle_symbol_table(middlelist,EntryName,SmartLinking);
  {SmartLink the sections}
  for i:=1 to middlelist.SymTable.SymbolCount do
   begin
-   if(middlelist.SymTable.SymbolQuotedByMain[i-1]=SmartLinking) then
+   if(middlelist.SymTable.SymbolQuotedByMain[i-1]=SmartLinking)
+   and(middlelist.symTable.SymbolSection[i-1]<>'') then
     begin
-     bool:=false;
-     if(middlelist.symTable.SymbolSection[i-1]='') then continue;
-     for j:=1 to templist1.Count do
+     j:=middlelist.SymTable.SymbolFileIndex[i-1];
+     for k:=1 to templist1.ObjFile[j-1].SecCount do
       begin
-       for k:=1 to templist1.ObjFile[j-1].SecCount do
+       if(middlelist.SymTable.SymbolSection[i-1]=templist1.ObjFile[j-1].SecName[k-1])then
         begin
-         if(middlelist.SymTable.SymbolSection[i-1]=templist1.ObjFile[j-1].SecName[k-1])then
-          begin
-           templist1.ObjFile[j-1].SecUsed[k-1]:=true; bool:=true; break;
-          end;
+         templist1.ObjFile[j-1].SecUsed[k-1]:=true; break;
         end;
-       if(bool) then break;
       end;
     end;
   end;
@@ -1851,25 +1733,10 @@ begin
    templist2.SecFlag:=templist2.SecFlag or templist1.ObjFile[i-1].SecFlag;
   end;
  {Create the basic section}
- Order:=['.text','.rodata','.init_array','.init','.fini_array','.fini','.data','.bss','.tdata','.tbss',
+ Order:=['.text','.init_array','.init','.fini_array','.fini','.rodata','.data','.bss','.tdata','.tbss',
  '.debug_frame','.preinit_array'];
  for i:=1 to length(order) do
   begin
-   j:=1; bool:=false;
-   for j:=1 to templist1.Count do
-    begin
-     k:=1;
-     while(k<=templist1.ObjFile[j-1].SecCount)do
-      begin
-       if(Copy(templist1.ObjFile[j-1].SecName[k-1],1,length(Order[i-1]))=Order[i-1]) then
-        begin
-         bool:=true; break;
-        end;
-       inc(k);
-      end;
-     if(bool) then break;
-    end;
-   if(bool=false) then continue;
    inc(templist2.SecCount);
    SetLength(templist2.SecName,templist2.SecCount);
    SetLength(templist2.SecSize,templist2.SecCount);
@@ -1884,14 +1751,13 @@ begin
     begin
      for k:=1 to templist1.ObjFile[j-1].SecCount do
       begin
-       if(Copy(templist1.ObjFile[j-1].SecName[k-1],1,length(Order[i-1]))=Order[i-1])
-       and (templist1.ObjFile[j-1].SecUsed[k-1]) and (Order[i-1]<>'.bss') and
-       (Order[i-1]<>'.tbss') and (templist1.ObjFile[j-1].SecSize[k-1]>0) then
+       if(Copy(templist1.ObjFile[j-1].SecName[k-1],1,length(Order[i-1]))<>Order[i-1]) or
+       (templist1.ObjFile[j-1].SecSize[k-1]<=0) then continue;
+       if(templist1.ObjFile[j-1].SecUsed[k-1]) then
         begin
          inc(templist2.SecContent[templist2.SecCount-1].SecCount);
          tempcount:=templist2.SecContent[templist2.SecCount-1].SecCount;
-         if(templist1.ObjFile[j-1].SecAlign[k-1]>templist2.SecAlign[templist2.SecCount-1]) then
-         templist2.SecAlign[templist2.SecCount-1]:=templist1.ObjFile[j-1].SecAlign[k-1];
+         templist2.SecAlign[templist2.SecCount-1]:=ldbit shl 2;
          SetLength(templist2.SecContent[templist2.SecCount-1].SecName,tempcount);
          SetLength(templist2.SecContent[templist2.SecCount-1].SecOffset,tempcount);
          SetLength(templist2.SecContent[templist2.SecCount-1].SecContent,tempcount);
@@ -1903,41 +1769,28 @@ begin
          templist2.SecContent[templist2.SecCount-1].SecSize[tempcount-1]:=
          templist1.ObjFile[j-1].SecSize[k-1];
          inc(partoffset,templist2.SecContent[templist2.SecCount-1].SecSize[tempcount-1]);
-         templist2.SecContent[templist2.SecCount-1].SecContent[tempcount-1]:=
-         tydq_allocmem(templist1.ObjFile[j-1].SecSize[k-1]);
-         tydq_move(templist1.ObjFile[j-1].SecContent[k-1]^,
-         templist2.SecContent[templist2.SecCount-1].SecContent[tempcount-1]^,
-         templist2.SecContent[templist2.SecCount-1].SecSize[tempcount-1]);
-        end
-       else if(Copy(templist1.ObjFile[j-1].SecName[k-1],1,length(Order[i-1]))=Order[i-1])
-       and (templist1.ObjFile[j-1].SecUsed[k-1]) and (templist1.ObjFile[j-1].SecSize[k-1]>0) then
-        begin
-         inc(templist2.SecContent[templist2.SecCount-1].SecCount);
-         tempcount:=templist2.SecContent[templist2.SecCount-1].SecCount;
-         if(templist1.ObjFile[j-1].SecAlign[k-1]>templist2.SecAlign[templist2.SecCount-1]) then
-         templist2.SecAlign[templist2.SecCount-1]:=templist1.ObjFile[j-1].SecAlign[k-1];
-         SetLength(templist2.SecContent[templist2.SecCount-1].SecName,tempcount);
-         SetLength(templist2.SecContent[templist2.SecCount-1].SecOffset,tempcount);
-         SetLength(templist2.SecContent[templist2.SecCount-1].SecContent,tempcount);
-         SetLength(templist2.SecContent[templist2.SecCount-1].SecSize,tempcount);
-         templist2.SecContent[templist2.SecCount-1].SecName[tempcount-1]:=
-         templist1.ObjFile[j-1].SecName[k-1];
-         templist2.SecContent[templist2.SecCount-1].SecOffset[tempcount-1]:=
-         partoffset;
-         templist2.SecContent[templist2.SecCount-1].SecSize[tempcount-1]:=
-         templist1.ObjFile[j-1].SecSize[k-1];
-         inc(partoffset,templist2.SecContent[templist2.SecCount-1].SecSize[tempcount-1]);
-         templist2.SecContent[templist2.SecCount-1].SecContent[tempcount-1]:=nil;
+         if(Order[i-1]<>'.bss') and (Order[i-1]<>'.tbss') then
+          begin
+           templist2.SecContent[templist2.SecCount-1].SecContent[tempcount-1]:=
+           tydq_allocmem(templist1.ObjFile[j-1].SecSize[k-1]);
+           tydq_move(templist1.ObjFile[j-1].SecContent[k-1]^,
+           templist2.SecContent[templist2.SecCount-1].SecContent[tempcount-1]^,
+           templist2.SecContent[templist2.SecCount-1].SecSize[tempcount-1]);
+          end
+         else templist2.SecContent[templist2.SecCount-1].SecContent[tempcount-1]:=nil;
         end;
       end;
     end;
-   templist2.SecSize[templist2.SecCount-1]:=partoffset;
+   if(partoffset=0) then dec(templist2.SecCount)
+   else templist2.SecSize[templist2.SecCount-1]:=partoffset;
   end;
  {Generate the symbol table}
  templist2.SymTable.SymbolCount:=0;
  for i:=1 to middlelist.SymTable.SymbolCount do
   begin
-   if(middlelist.SymTable.SymbolQuotedByMain[i-1]=SmartLinking) then
+   if(middlelist.SymTable.SymbolQuotedByMain[i-1]=SmartLinking) and
+   ((middlelist.SymTable.SymbolIndex[i-1]<>0) or (middlelist.SymTable.SymbolType[i-1]<>0)) and
+   (middlelist.SymTable.SymbolName[i-1]<>'') then
     begin
      inc(templist2.SymTable.SymbolCount);
      SetLength(templist2.SymTable.SymbolSection,templist2.SymTable.SymbolCount);
@@ -1959,8 +1812,14 @@ begin
      templist2.SymTable.SymbolSize[templist2.SymTable.SymbolCount-1]:=
      middlelist.SymTable.SymbolSize[i-1];
      {Get the Index and Value of the Section}
-     bool:=false;
-     for j:=1 to templist2.SecCount do
+     bool:=false; j:=1;
+     while(j<=templist2.SecCount)do
+      begin
+       if(Copy(middlelist.SymTable.SymbolSection[i-1],1,
+       length(templist2.SecName[j-1]))=templist2.SecName[j-1]) then break;
+       inc(j);
+      end;
+     if(j<=templist2.SecCount)then
       begin
        for k:=1 to templist2.SecContent[j-1].SecCount do
         begin
@@ -1969,9 +1828,10 @@ begin
            bool:=true; break;
           end;
         end;
-       if(bool) then break;
-      end;
-     if(bool) then
+      end
+     else bool:=false;
+     if(bool) and ((middlelist.SymTable.SymbolType[j-1]>0) or
+     (middlelist.SymTable.SymbolIndex[j-1]>0)) then
       begin
        SetLength(templist2.SymTable.SymbolIndex,templist2.SymTable.SymbolCount);
        templist2.SymTable.SymbolIndex[templist2.SymTable.SymbolCount-1]:=j;
@@ -1990,32 +1850,6 @@ begin
        SetLength(templist2.SymTable.SymbolVisible,templist2.SymTable.SymbolCount);
        SetLength(templist2.SymTable.SymbolName,templist2.SymTable.SymbolCount);
        SetLength(templist2.SymTable.SymbolType,templist2.SymTable.SymbolCount);
-      end;
-     {Delete the Repeated Symbol Table}
-     if(templist2.SymTable.SymbolCount=0) then continue;
-     for j:=1 to templist2.SymTable.SymbolCount-1 do
-      begin
-       if((templist2.SymTable.SymbolName[templist2.SymTable.SymbolCount-1]=
-       templist2.SymTable.SymbolName[j-1]) and
-       (templist2.SymTable.SymbolType[templist2.SymTable.SymbolCount-1]<=
-       templist2.SymTable.SymbolType[j-1]) and
-       (templist2.SymTable.SymbolValue[templist2.SymTable.SymbolCount-1]=
-       templist2.SymTable.SymbolValue[j-1]) and
-       (templist2.SymTable.SymbolSize[templist2.SymTable.SymbolCount-1]=
-       templist2.SymTable.SymbolSize[j-1])) or
-       (templist2.SymTable.SymbolName[templist2.SymTable.SymbolCount-1]='') then
-        begin
-         dec(templist2.SymTable.SymbolCount);
-         SetLength(templist2.SymTable.SymbolSection,templist2.SymTable.SymbolCount);
-         SetLength(templist2.SymTable.SymbolValue,templist2.SymTable.SymbolCount);
-         SetLength(templist2.SymTable.SymbolSize,templist2.SymTable.SymbolCount);
-         SetLength(templist2.SymTable.SymbolBinding,templist2.SymTable.SymbolCount);
-         SetLength(templist2.SymTable.SymbolIndex,templist2.SymTable.SymbolCount);
-         SetLength(templist2.SymTable.SymbolVisible,templist2.SymTable.SymbolCount);
-         SetLength(templist2.SymTable.SymbolName,templist2.SymTable.SymbolCount);
-         SetLength(templist2.SymTable.SymbolType,templist2.SymTable.SymbolCount);
-         break;
-        end;
       end;
     end;
   end;
@@ -4808,44 +4642,37 @@ begin
  i:=1;
  while(i<=templist2.Adjust.count)do
   begin
-   j:=1;
-   while(j<=i-1)do
+   if(templist2.Adjust.DestName[i-1]='') or
+   ((templist2.Adjust.AdjustType[i-1]=elf_reloc_riscv_align) and (ldarch=elf_machine_riscv)) then
     begin
-     if((templist2.Adjust.SrcIndex[i-1]=templist2.Adjust.SrcIndex[j-1]) and
-     (templist2.Adjust.SrcOffset[i-1]=templist2.Adjust.SrcOffset[j-1]))
-     or ((templist2.Adjust.AdjustType[i-1]=elf_reloc_riscv_align) and (ldarch=elf_machine_riscv)) then
-      begin
-       if(ldarch=elf_machine_riscv) and (templist2.Adjust.AdjustType[i-1]=elf_reloc_riscv_relax) then
-       templist2.Adjust.AdjustRelax[j-1]:=true
-       else if(ldarch=elf_machine_loongarch) and
-       (templist2.Adjust.AdjustType[i-1]=elf_reloc_loongarch_relax) then
-       templist2.Adjust.AdjustRelax[j-1]:=true;
-       Delete(templist2.Adjust.AdjustRelax,i-1,1);
-       Delete(templist2.Adjust.Formula,i-1,1); Delete(templist2.Adjust.SrcOffset,i-1,1);
-       Delete(templist2.Adjust.SrcIndex,i-1,1); Delete(templist2.Adjust.SrcName,i-1,1);
-       Delete(templist2.Adjust.DestIndex,i-1,1); Delete(templist2.Adjust.DestOffset,i-1,1);
-       Delete(templist2.Adjust.DestName,i-1,1); Delete(templist2.Adjust.AdjustFunc,i-1,1);
-       Delete(templist2.Adjust.AdjustType,i-1,1); Delete(templist2.Adjust.Addend,i-1,1);
-       dec(templist2.Adjust.count);
-       break;
-      end;
-     inc(j);
+     Delete(templist2.Adjust.AdjustRelax,i-1,1);
+     Delete(templist2.Adjust.Formula,i-1,1); Delete(templist2.Adjust.SrcOffset,i-1,1);
+     Delete(templist2.Adjust.SrcIndex,i-1,1); Delete(templist2.Adjust.SrcName,i-1,1);
+     Delete(templist2.Adjust.DestIndex,i-1,1); Delete(templist2.Adjust.DestOffset,i-1,1);
+     Delete(templist2.Adjust.DestName,i-1,1); Delete(templist2.Adjust.AdjustFunc,i-1,1);
+     Delete(templist2.Adjust.AdjustType,i-1,1); Delete(templist2.Adjust.Addend,i-1,1);
+     dec(templist2.Adjust.count);
+     continue;
     end;
-   if(j>i-1) then
+   j:=i-1;
+   if(j>1) and ((templist2.Adjust.SrcIndex[i-1]=templist2.Adjust.SrcIndex[j-1]) and
+   (templist2.Adjust.SrcOffset[i-1]=templist2.Adjust.SrcOffset[j-1])) then
     begin
-     if(templist2.Adjust.DestName[i-1]='') then
-      begin
-       Delete(templist2.Adjust.AdjustRelax,i-1,1);
-       Delete(templist2.Adjust.Formula,i-1,1); Delete(templist2.Adjust.SrcOffset,i-1,1);
-       Delete(templist2.Adjust.SrcIndex,i-1,1); Delete(templist2.Adjust.SrcName,i-1,1);
-       Delete(templist2.Adjust.DestIndex,i-1,1); Delete(templist2.Adjust.DestOffset,i-1,1);
-       Delete(templist2.Adjust.DestName,i-1,1); Delete(templist2.Adjust.AdjustFunc,i-1,1);
-       Delete(templist2.Adjust.AdjustType,i-1,1); Delete(templist2.Adjust.Addend,i-1,1);
-       dec(templist2.Adjust.count);
-       continue;
-      end;
-     inc(i);
+     if(ldarch=elf_machine_riscv) and (templist2.Adjust.AdjustType[i-1]=elf_reloc_riscv_relax) then
+     templist2.Adjust.AdjustRelax[j-1]:=true
+     else if(ldarch=elf_machine_loongarch) and
+     (templist2.Adjust.AdjustType[i-1]=elf_reloc_loongarch_relax) then
+      templist2.Adjust.AdjustRelax[j-1]:=true;
+      Delete(templist2.Adjust.AdjustRelax,i-1,1);
+      Delete(templist2.Adjust.Formula,i-1,1); Delete(templist2.Adjust.SrcOffset,i-1,1);
+      Delete(templist2.Adjust.SrcIndex,i-1,1); Delete(templist2.Adjust.SrcName,i-1,1);
+      Delete(templist2.Adjust.DestIndex,i-1,1); Delete(templist2.Adjust.DestOffset,i-1,1);
+      Delete(templist2.Adjust.DestName,i-1,1); Delete(templist2.Adjust.AdjustFunc,i-1,1);
+      Delete(templist2.Adjust.AdjustType,i-1,1); Delete(templist2.Adjust.Addend,i-1,1);
+      dec(templist2.Adjust.count);
+      continue;
     end;
+   inc(i);
   end;
  {Indicate the Entry Index and offset in file}
  templist2.EntryIndex:=0; templist2.EntryOffset:=0;
@@ -4854,18 +4681,15 @@ begin
    if(templist2.SymTable.SymbolName[i-1]=EntryName) then
     begin
      bool:=false;
-     for j:=1 to templist2.SecCount do
+     j:=templist2.SymTable.SymbolIndex[i-1];
+     for k:=1 to templist2.SecContent[j-1].SecCount do
       begin
-       for k:=1 to templist2.SecContent[j-1].SecCount do
+       if(bool=false) and
+       (templist2.SecContent[j-1].SecName[k-1]=templist2.SymTable.SymbolSection[i-1]) then
         begin
-         if(bool=false) and
-         (templist2.SecContent[j-1].SecName[k-1]=templist2.SymTable.SymbolSection[i-1]) then
-          begin
-           templist2.EntryIndex:=j; templist2.EntryOffset:=templist2.SecContent[j-1].SecOffset[k-1];
-           break;
-          end;
+         templist2.EntryIndex:=j; templist2.EntryOffset:=templist2.SecContent[j-1].SecOffset[k-1];
+         break;
         end;
-       if(bool) then break;
       end;
      if(bool) then break;
     end;
@@ -4929,8 +4753,6 @@ var tempfinal:ld_object_file_final;
     initindex,finiindex:Natuint;
     initarrayindex,finiarrayindex,preinitarrayindex:Natuint;
     haverodata,havetls,haveinit,havefini,haveinitarray,havefiniarray,havepreinitarray:boolean;
-    {For Debug Only}
-    count:Natuint;
 label label1,label2,label3,label4,label5;
 begin
  tempfinal.SecCount:=0; tempfinal.format:=format;
@@ -5045,8 +4867,19 @@ begin
      ldfile.Adjust.Formula[i-1].mask);
     end
    else if(isrelative) and (ldfile.Adjust.DestIndex[i-1]=0)
-   and ((ldarch=elf_machine_386) or (ldarch=elf_machine_x86_64)) then
+   and ((ldarch=elf_machine_386) or (ldarch=elf_machine_x86_64))
+   and ((isgotbase) or (isgotoffset)) then
     begin
+     j:=1;
+     while(j<=Length(tempfinal.GotPltSymbol)) do
+      begin
+       if(tempfinal.GotPltSymbol[j-1]=ldfile.Adjust.DestName[i-1]) then break;
+       inc(j);
+      end;
+     if(j<=length(tempfinal.GotPltSymbol)) then continue;
+     SetLength(tempfinal.GotPltSymbol,length(tempfinal.GotPltSymbol)+1);
+     tempfinal.GotPltSymbol[length(tempfinal.GotSymbol)-1]:=ldfile.Adjust.DestName[i-1];
+     inc(tempfinal.Rela.SymCount);
      ldfile.Adjust.Formula[i-1]:=ld_generate_formula(['GOT+G+A-P'],ldfile.Adjust.Formula[i-1].bit,
      ldfile.Adjust.Formula[i-1].mask);
     end
@@ -5104,10 +4937,28 @@ begin
     end
    else if((isgotbase) or (isgotoffset)) and (ldfile.Adjust.DestIndex[i-1]=0) then
     begin
+     j:=1;
+     while(j<=Length(tempfinal.GotSymbol)) do
+      begin
+       if(tempfinal.GotPltSymbol[j-1]=ldfile.Adjust.DestName[i-1]) then break;
+       inc(j);
+      end;
+     if(j<=length(tempfinal.GotPltSymbol)) then continue;
+     SetLength(tempfinal.GotPltSymbol,length(tempfinal.GotPltSymbol)+1);
+     tempfinal.GotPltSymbol[length(tempfinal.GotPltSymbol)-1]:=ldfile.Adjust.DestName[i-1];
      inc(tempfinal.Rela.SymCount);
     end
    else if(ldarch=elf_machine_386) or (ldarch=elf_machine_x86_64) then
     begin
+     j:=1;
+     while(j<=Length(tempfinal.GotSymbol)) do
+      begin
+       if(tempfinal.GotSymbol[j-1]=ldfile.Adjust.DestName[i-1]) then break;
+       inc(j);
+      end;
+     if(j<=length(tempfinal.GotSymbol)) then continue;
+     SetLength(tempfinal.GotSymbol,length(tempfinal.GotSymbol)+1);
+     tempfinal.GotSymbol[length(tempfinal.GotSymbol)-1]:=ldfile.Adjust.DestName[i-1];
      inc(tempfinal.Rela.SymCount);
     end;
   end;
@@ -5335,7 +5186,8 @@ begin
   begin
    for i:=1 to ldfile.SymTable.SymbolCount do
     begin
-     if(ldfile.SecName[ldfile.SymTable.SymbolIndex[i-1]-1]='.debug_frame') and (debugframe=false) then continue;
+     if(ldfile.SecName[ldfile.SymTable.SymbolIndex[i-1]-1]='.debug_frame') and (debugframe=false)
+     then continue;
      inc(strsize,length(ldfile.SymTable.SymbolName[i-1])+1);
     end;
   end
@@ -7269,7 +7121,7 @@ begin
     end;
    if(ldarch=elf_machine_386) or (ldarch=elf_machine_x86_64) then
     begin
-     if(isexternal) then
+     if(isexternal) or (ldfile.Adjust.DestIndex[i-1]=0) then
       begin
        tempresult:=ld_calculate_formula(tempformula,
        ['S='+IntToStr(endoffset),'A='+IntToStr(ldfile.Adjust.Addend[i-1]),'B=0',
@@ -7285,9 +7137,9 @@ begin
         'GOT='+IntToStr(tempfinal.GotAddr),
         'G='+IntToStr(writepos[1]*ldbit shl 2)]);
       end;
-     if(isrelative=false) or (ldfile.Adjust.DestIndex[i-1]=0) then
+     if(isrelative=false) or ((isgotbase) or (isgotoffset)) or (ldfile.Adjust.DestIndex[i-1]=0) then
       begin
-       if(isexternal) then
+       if(isexternal) or (ldfile.Adjust.DestIndex[i-1]=0) then
         begin
          SetLength(tempfinal.Rela.SymOffset,tempfinal.Rela.SymCount);
          tempfinal.Rela.SymOffset[offset2-1]:=tempfinal.GotPltAddr+writepos[2]*ldbit shl 2;
@@ -7349,7 +7201,7 @@ begin
     end
    else if(ldarch=elf_machine_arm) then
     begin
-     if(isexternal) then
+     if(isexternal) or (ldfile.Adjust.DestIndex[i-1]=0) then
       begin
        tempresult:=ld_calculate_formula(tempformula,
        ['S='+IntToStr(endoffset),'A='+IntToStr(ldfile.Adjust.Addend[i-1]),
@@ -7371,9 +7223,9 @@ begin
         'GOT_ORG='+IntToStr(tempfinal.GotAddr),
         'GOT='+IntToStr(tempfinal.GotAddr+writepos[1]*ldbit shl 2)]);
       end;
-     if((isgotbase) or (isgotoffset)) or (ldfile.Adjust.DestIndex[i-1]=0) then
+     if(isrelative=false) or ((isgotbase) or (isgotoffset)) or (ldfile.Adjust.DestIndex[i-1]=0) then
       begin
-       if(isexternal) then
+       if(isexternal) or (ldfile.Adjust.DestIndex[i-1]=0) then
         begin
          SetLength(tempfinal.Rela.SymOffset,tempfinal.Rela.SymCount);
          tempfinal.Rela.SymOffset[offset2-1]:=tempfinal.GotPltAddr+writepos[2]*ldbit shl 2;
@@ -7620,7 +7472,7 @@ begin
     end
    else if(ldarch=elf_machine_aarch64) then
     begin
-     if(isexternal) then
+     if(isexternal) or (ldfile.Adjust.DestIndex[i-1]=0) then
       begin
        tempresult:=ld_calculate_formula(tempformula,
        ['S='+IntToStr(endoffset),'A='+IntToStr(ldfile.Adjust.Addend[i-1]),
@@ -7638,9 +7490,9 @@ begin
         'GOT='+IntToStr(tempfinal.GotAddr),
         'G='+IntToStr(tempfinal.GotAddr)]);
       end;
-     if((isgotbase) or (isgotoffset)) or (ldfile.Adjust.DestIndex[i-1]=0) then
+     if(isrelative=false) or ((isgotbase) or (isgotoffset)) or (ldfile.Adjust.DestIndex[i-1]=0) then
       begin
-       if(isexternal) then
+       if(isexternal) or (ldfile.Adjust.DestIndex[i-1]=0) then
         begin
          SetLength(tempfinal.Rela.SymOffset,tempfinal.Rela.SymCount);
          tempfinal.Rela.SymOffset[offset2-1]:=tempfinal.GotPltAddr+writepos[2]*ldbit shl 2;
@@ -7926,7 +7778,7 @@ begin
       begin
        q1:=Pqword(changeptr)^;
       end;
-     if(isexternal) then
+     if(isexternal) or (ldfile.Adjust.DestIndex[i-1]=0) then
       begin
        tempresult:=ld_calculate_formula(tempformula,
        ['S='+IntToStr(endoffset),'A='+IntToStr(ldfile.Adjust.Addend[i-1]),
@@ -7947,9 +7799,9 @@ begin
       begin
        tempresult:=-tempresult; negative:=true;
       end;
-     if((isgotbase) or (isgotoffset)) or (ldfile.Adjust.DestIndex[i-1]=0) then
+     if(isrelative=false) or ((isgotbase) or (isgotoffset)) or (ldfile.Adjust.DestIndex[i-1]=0) then
       begin
-       if(isexternal) then
+       if(isexternal) or (ldfile.Adjust.DestIndex[i-1]=0) then
         begin
          SetLength(tempfinal.Rela.SymOffset,tempfinal.Rela.SymCount);
          tempfinal.Rela.SymOffset[offset2-1]:=tempfinal.GotPltAddr+writepos[2]*ldbit shl 2;
@@ -8110,7 +7962,7 @@ begin
     end
    else if(ldarch=elf_machine_loongarch) then
     begin
-     if(isexternal) then
+     if(isexternal) or (ldfile.Adjust.DestIndex[i-1]=0) then
       begin
        tempresult:=ld_calculate_formula(tempformula,
        ['S='+IntToStr(endoffset),'A='+IntToStr(ldfile.Adjust.Addend[i-1]),
@@ -8129,9 +7981,9 @@ begin
       begin
        tempresult:=-tempresult; negative:=true;
       end;
-     if((isgotbase) or (isgotoffset)) or (ldfile.Adjust.DestIndex[i-1]=0) then
+     if(isrelative=false) or ((isgotbase) or (isgotoffset)) or (ldfile.Adjust.DestIndex[i-1]=0) then
       begin
-       if(isexternal) then
+       if(isexternal) or (ldfile.Adjust.DestIndex[i-1]=0) then
         begin
          SetLength(tempfinal.Rela.SymOffset,tempfinal.Rela.SymCount);
          tempfinal.Rela.SymOffset[offset2-1]:=tempfinal.GotPltAddr+writepos[2]*ldbit shl 2;
@@ -9138,7 +8990,7 @@ begin
    inc(i);
   end;
  {Now Send it to elf writer}
- writeindex:=0;
+ writeindex:=0; DeleteFile(fn);
  if(ldbit=1) then
   begin
    for i:=1 to 16 do writer32.Header.elf_id[i]:=0;
@@ -9762,6 +9614,3842 @@ begin
    tydq_freemem(tempfinal.SecContent[i-1]);
    inc(i);
   end;
+end;
+procedure ld_initialize_pe_writer(var writer:ld_pe_writer);
+var i:Natuint;
+begin
+ for i:=1 to sizeof(pe_dos_header)+64+sizeof(pe_image_header) do
+  begin
+   Pbyte(Pointer(@writer)+i-1)^:=0;
+  end;
+ SetLength(writer.SectionHeader,0);
+end;
+procedure ld_handle_elf_file_to_efi_file(fn:string;var ldfile:ld_object_file_stage_2;align:dword;
+debugframe:boolean;format:byte;stripsymbol:boolean);
+var tempfinal:ld_object_file_final;
+    i,j,k,m,n:Natuint;
+    partoffset:Natuint;
+    tempformula:ld_formula;
+    tempnum:Natuint;
+    writeindex:word;
+    writepos:array[1..2] of Natuint;
+    strsize:Natuint;
+    order:array of string;
+    startoffset,compareoffset,endoffset:Natuint;
+    changeptr:Pointer;
+    tempresult:NatInt;
+    index:Natuint;
+    haverodata:boolean;
+    {Set for Relocation}
+    isrelative:boolean;
+    isgotbase:boolean;
+    isgotoffset:boolean;
+    ispaged:boolean;
+    AdjustOrder:array of Natuint;
+    isexternal:boolean;
+    {Set the EFI writer}
+    writeoffset:Natuint;
+    checksumoffset:Natuint;
+    textoffset,rodataoffset,dataoffset,relocoffset:Natuint;
+    pebinary:Pbyte;
+    pesize:dword;
+    baserelativeaddress:Natuint;
+    baseaddresssize:Natuint;
+    symboltableAddr:Natuint;
+    symboltable:array of coff_symbol_table_item;
+    symbolstringtable:PChar;
+    symbolstringtableptr:Natuint;
+    writer:ld_pe_writer;
+    {For non-x64 architecture}
+    tempnum1,tempnum2,tempnum3,tempnum4:Natint;
+    gotindex,gotpltindex:word;
+    movesecoffset,movesecoffset2:Natint;
+    tempresult2:Natint;
+    tempindex,tempindex2,tempindex3,tempindex4:Word;
+    offset1,offset2:Natuint;
+    {Set the fixed length instruction data}
+    d1,d2,d3,d4,d5,d6,d7,d8,d9,d10:dword;
+    q1,q2:qword;
+    negative:boolean;
+label label1;
+begin
+ tempfinal.SecCount:=0; tempfinal.format:=format;
+ for i:=1 to 2 do writepos[i]:=3;
+ {Now Generate the entire vaild section}
+ haverodata:=false;
+ for i:=1 to ldfile.SecCount do
+  begin
+   if(ldfile.SecName[i-1]='.debug_frame') and (debugframe=false) then continue;
+   if(ldfile.SecSize[i-1]=0) then continue;
+   inc(tempfinal.SecCount);
+   SetLength(tempfinal.SecName,tempfinal.SecCount);
+   SetLength(tempfinal.SecContent,tempfinal.SecCount);
+   SetLength(tempfinal.SecIndex,tempfinal.SecCount);
+   SetLength(tempfinal.SecAddress,tempfinal.SecCount);
+   SetLength(tempfinal.SecAlign,tempfinal.SecCount);
+   SetLength(tempfinal.SecSize,tempfinal.SecCount);
+   if(ldfile.SecName[i-1]='.text') then
+   tempfinal.SecName[tempfinal.SecCount-1]:='.text'
+   else if(ldfile.SecName[i-1]='.rodata') then
+    begin
+     tempfinal.SecName[tempfinal.SecCount-1]:='.rodata'; haverodata:=true;
+    end
+   else if(ldfile.SecName[i-1]='.data') then
+   tempfinal.SecName[tempfinal.SecCount-1]:='.data'
+   else if(ldfile.SecName[i-1]='.bss') then
+   tempfinal.SecName[tempfinal.SecCount-1]:='.bss'
+   else if(ldfile.SecName[i-1]='.tdata') then
+    begin
+     tempfinal.SecName[tempfinal.SecCount-1]:='.tdata';
+    end
+   else if(ldfile.SecName[i-1]='.tbss') then
+   tempfinal.SecName[tempfinal.SecCount-1]:='.tbss'
+   else if(ldfile.SecName[i-1]='.init') then
+    begin
+     tempfinal.SecName[tempfinal.SecCount-1]:='.init';
+    end
+   else if(ldfile.SecName[i-1]='.init_array') then
+    begin
+     tempfinal.SecName[tempfinal.SecCount-1]:='.init_array';
+    end
+   else if(ldfile.SecName[i-1]='.fini') then
+    begin
+     tempfinal.SecName[tempfinal.SecCount-1]:='.fini';
+    end
+   else if(ldfile.SecName[i-1]='.fini_array') then
+    begin
+     tempfinal.SecName[tempfinal.SecCount-1]:='.fini_array';
+    end
+   else if(ldfile.SecName[i-1]='.preinit_array') then
+    begin
+     tempfinal.SecName[tempfinal.SecCount-1]:='.preinit_array';
+    end
+   else if(ldfile.SecName[i-1]='.debug_frame') then
+   tempfinal.SecName[tempfinal.SecCount-1]:='.debug_frame';
+   tempfinal.SecAddress[tempfinal.SecCount-1]:=0;
+   tempfinal.SecIndex[tempfinal.SecCount-1]:=0;
+   tempfinal.SecAlign[tempfinal.SecCount-1]:=ldfile.SecAlign[i-1];
+   if(ldfile.SecName[i-1]<>'.bss') and (ldfile.SecSize[i-1]>0) then
+    begin
+     tempfinal.SecSize[tempfinal.SecCount-1]:=ldfile.SecSize[i-1];
+     tempfinal.SecContent[tempfinal.SecCount-1]:=tydq_allocmem(ldfile.SecSize[i-1]);
+     partoffset:=0;
+     for j:=1 to ldfile.SecContent[i-1].SecCount do
+      begin
+       partoffset:=ldfile.SecContent[i-1].SecOffset[j-1];
+       tydq_move(ldfile.SecContent[i-1].SecContent[j-1]^,
+       (tempfinal.SecContent[tempfinal.SecCount-1]+partoffset)^,ldfile.SecContent[i-1].SecSize[j-1]);
+       inc(partoffset,ldfile.SecContent[i-1].SecSize[j-1]);
+      end;
+    end
+   else if(ldfile.SecName[i-1]='.bss') then
+    begin
+     tempfinal.SecSize[tempfinal.SecCount-1]:=ldfile.SecSize[i-1];
+     tempfinal.SecContent[tempfinal.SecCount-1]:=nil;
+    end
+   else
+    begin
+     tempfinal.SecSize[tempfinal.SecCount-1]:=0;
+     tempfinal.SecContent[tempfinal.SecCount-1]:=nil;
+    end;
+  end;
+ {Check the got and got.plt section can be generated}
+ SetLength(tempfinal.GotTable,0); SetLength(tempfinal.GotPltTable,0);
+ tempfinal.DynSym.SymbolCount:=0; tempfinal.Rela.SymCount:=0;
+ SetLength(tempfinal.GotSymbol,0); SetLength(tempfinal.GotPltSymbol,0);
+ {Confirm the Adjust Table for Relative}
+ for i:=1 to ldfile.Adjust.Count do
+  begin
+   j:=1;
+   isrelative:=false; isgotbase:=false; isgotoffset:=false; ispaged:=false; j:=1;
+   while(j<=ldfile.Adjust.Formula[i-1].item.count)do
+    begin
+     if(ldfile.Adjust.Formula[i-1].item.item[j-1]='G') then isgotoffset:=true;
+     if(j<ldfile.Adjust.Formula[i-1].item.count)
+     and((ldfile.Adjust.Formula[i-1].item.item[j-1]='GOT')
+     or(ldfile.Adjust.Formula[i-1].item.item[j-1]='GP'))
+     and (ldfile.Adjust.Formula[i-1].item.item[j]<>'(') then isgotbase:=true;
+     if(j<ldfile.Adjust.Formula[i-1].item.count) and (ldfile.Adjust.Formula[i-1].item.item[j-1]='G')
+     and (ldfile.Adjust.Formula[i-1].item.item[j]='(') then isgotbase:=true;
+     if(ldfile.Adjust.Formula[i-1].item.item[j-1]='P')
+     or(ldfile.Adjust.Formula[i-1].item.item[j-1]='PLT')
+     or(ldfile.Adjust.Formula[i-1].item.item[j-1]='PC')
+     or(ldfile.Adjust.Formula[i-1].item.item[j-1]='L') then isrelative:=true;
+     if(ldfile.Adjust.Formula[i-1].item.item[j-1]='Page') then ispaged:=true;
+     inc(j);
+    end;
+   if(isrelative) and ((ldarch=elf_machine_386) or (ldarch=elf_machine_x86_64)) then
+    begin
+     ldfile.Adjust.Formula[i-1]:=ld_generate_formula(['S+A-P'],ldfile.Adjust.Formula[i-1].bit,
+     ldfile.Adjust.Formula[i-1].mask);
+    end
+   else if(isrelative) and (ldfile.Adjust.DestIndex[i-1]=0)
+   and ((ldarch=elf_machine_386) or (ldarch=elf_machine_x86_64)) then
+    begin
+     writeln('ERROR:Cannot generate the UEFI File due to Symbol '+ldfile.Adjust.DestName[i-1]+
+     ' undefined.');
+     readln;
+     abort;
+    end
+   else if(isrelative) and (isgotbase=false) and (isgotoffset=false) then
+    begin
+     if(ispaged) and (ldarch<>elf_machine_loongarch) then
+      begin
+       ldfile.Adjust.Formula[i-1]:=ld_generate_formula(['Page(S+A)-Page(P)'],ldfile.Adjust.Formula[i-1].bit,
+       ldfile.Adjust.Formula[i-1].mask);
+      end
+     else if(ispaged) then
+      begin
+       ldfile.Adjust.Formula[i-1]:=ld_generate_formula(['Page(S+A)-Page(PC)'],ldfile.Adjust.Formula[i-1].bit,
+       ldfile.Adjust.Formula[i-1].mask);
+      end
+     else if(ldarch<>elf_machine_loongarch) then
+      begin
+       ldfile.Adjust.Formula[i-1]:=ld_generate_formula(['S+A-P'],ldfile.Adjust.Formula[i-1].bit,
+       ldfile.Adjust.Formula[i-1].mask);
+      end
+     else
+      begin
+       ldfile.Adjust.Formula[i-1]:=ld_generate_formula(['S+A-PC'],ldfile.Adjust.Formula[i-1].bit,
+       ldfile.Adjust.Formula[i-1].mask);
+      end;
+    end
+   else if(ldarch=elf_machine_riscv) and
+   ((ldfile.Adjust.AdjustType[i-1]=elf_reloc_riscv_low_12bit_signed) or
+    (ldfile.Adjust.AdjustType[i-1]=elf_reloc_riscv_low_12bit) or
+    (ldfile.Adjust.AdjustType[i-1]=elf_reloc_riscv_high_20bit)) then
+    begin
+     j:=1;
+     while(j<=Length(tempfinal.GotSymbol)) do
+      begin
+       if(tempfinal.GotSymbol[j-1]=ldfile.Adjust.DestName[i-1]) then break;
+       inc(j);
+      end;
+     if(j<=length(tempfinal.GotSymbol)) then continue;
+     SetLength(tempfinal.GotSymbol,length(tempfinal.GotSymbol)+1);
+     tempfinal.GotSymbol[length(tempfinal.GotSymbol)-1]:=ldfile.Adjust.DestName[i-1];
+     inc(tempfinal.Rela.SymCount);
+    end
+   else if((isgotbase) or (isgotoffset)) and (ldfile.Adjust.DestIndex[i-1]<>0) then
+    begin
+     j:=1;
+     while(j<=Length(tempfinal.GotSymbol)) do
+      begin
+       if(tempfinal.GotSymbol[j-1]=ldfile.Adjust.DestName[i-1]) then break;
+       inc(j);
+      end;
+     if(j<=length(tempfinal.GotSymbol)) then continue;
+     SetLength(tempfinal.GotSymbol,length(tempfinal.GotSymbol)+1);
+     tempfinal.GotSymbol[length(tempfinal.GotSymbol)-1]:=ldfile.Adjust.DestName[i-1];
+     inc(tempfinal.Rela.SymCount);
+    end
+   else if((isgotbase) or (isgotoffset)) and (ldfile.Adjust.DestIndex[i-1]=0) then
+    begin
+     writeln('ERROR:Cannot generate the UEFI File due to the Symbol '+ldfile.Adjust.DestName[i-1]+
+     ' undefined.');
+     readln;
+     abort;
+    end
+   else if(ldarch=elf_machine_386) or (ldarch=elf_machine_x86_64) then
+    begin
+     j:=1;
+     while(j<=Length(tempfinal.GotSymbol)) do
+      begin
+       if(tempfinal.GotSymbol[j-1]=ldfile.Adjust.DestName[i-1]) then break;
+       inc(j);
+      end;
+     if(j<=length(tempfinal.GotSymbol)) then continue;
+     SetLength(tempfinal.GotSymbol,length(tempfinal.GotSymbol)+1);
+     tempfinal.GotSymbol[length(tempfinal.GotSymbol)-1]:=ldfile.Adjust.DestName[i-1];
+     inc(tempfinal.Rela.SymCount);
+    end;
+  end;
+ {Set the Got Table and Got Plt Table}
+ if(Length(tempfinal.GotSymbol)>0) then SetLength(tempfinal.GotTable,3+Length(tempfinal.GotSymbol));
+ {Now Generate the Relocation Necessary Value}
+ if(Length(tempfinal.GotTable)>0) then
+  begin
+   inc(tempfinal.SecCount);
+   SetLength(tempfinal.SecName,tempfinal.SecCount);
+   tempfinal.SecName[tempfinal.Seccount-1]:='.got';
+   SetLength(tempfinal.SecContent,tempfinal.SecCount);
+   tempfinal.SecContent[tempfinal.Seccount-1]:=tydq_allocmem(Length(tempfinal.GotTable)*ldbit shl 2);
+   SetLength(tempfinal.SecIndex,tempfinal.SecCount);
+   tempfinal.SecIndex[tempfinal.Seccount-1]:=0;
+   SetLength(tempfinal.SecAddress,tempfinal.SecCount);
+   tempfinal.SecAddress[tempfinal.Seccount-1]:=0;
+   SetLength(tempfinal.SecAlign,tempfinal.SecCount);
+   tempfinal.SecAlign[tempfinal.Seccount-1]:=ldbit shl 2;
+   SetLength(tempfinal.SecSize,tempfinal.SecCount);
+   tempfinal.SecSize[tempfinal.Seccount-1]:=Length(tempfinal.GotTable)*ldbit shl 2;
+  end;
+ {Now allocate the order of the section}
+ order:=['.text','.init','.fini','.rodata','.data',
+ '.init_array','.fini_array','.preinit_array','.got','.got.plt',
+ '.bss','.debug_frame']; rodataoffset:=0;
+ if(ldbit=1) then
+ startoffset:=sizeof(pe_dos_header)+64+4+
+ sizeof(coff_image_header)+sizeof(coff_optional_image_header32)+6*sizeof(pe_data_directory)+
+ (3+Byte(haverodata))*sizeof(pe_image_section_header)
+ else if(ldbit=2) then
+ startoffset:=sizeof(pe_dos_header)+64+4+
+ sizeof(coff_image_header)+sizeof(coff_optional_image_header64)+6*sizeof(pe_data_directory)+
+ (3+Byte(haverodata))*sizeof(pe_image_section_header);
+ i:=1; writeindex:=0; tempfinal.GotAddr:=0;
+ for i:=1 to length(order) do
+  begin
+   j:=1;
+   while(j<=tempfinal.SecCount)do
+    begin
+     if(tempfinal.SecName[j-1]=order[i-1]) then break;
+     inc(j);
+    end;
+   if(j>tempfinal.SecCount) then continue;
+   inc(writeindex);
+   if(Order[i-1]='.text') or (Order[i-1]='.rodata') or (Order[i-1]='.data') then
+   startoffset:=ld_align(startoffset,align)
+   else
+   startoffset:=ld_align(startoffset,ldbit shl 2);
+   tempfinal.SecAddress[j-1]:=startoffset;
+   tempfinal.SecIndex[j-1]:=writeindex;
+   if(Order[i-1]='.got') then
+    begin
+     tempfinal.GotAddr:=startoffset; gotindex:=j;
+    end;
+   if(Order[i-1]='.text') then textoffset:=startoffset
+   else if(Order[i-1]='.rodata') then rodataoffset:=startoffset
+   else if(Order[i-1]='.data') then dataoffset:=startoffset;
+   inc(startoffset,tempfinal.SecSize[j-1]);
+  end;
+ relocoffset:=ld_align(startoffset,align);
+ {Now Get the index of adjustment table}
+ SetLength(AdjustOrder,ldfile.Adjust.Count);
+ startoffset:=0; compareoffset:=0; movesecoffset:=0;
+ for i:=1 to ldfile.Adjust.Count do
+  begin
+   index:=ldfile.Adjust.SrcIndex[i-1];
+   if(ldfile.SecName[index-1]='.debug_frame') and (debugframe=false) then continue;
+   j:=1;
+   while(j<=tempfinal.SecCount)do
+    begin
+     if(ldfile.SecName[index-1]=tempfinal.SecName[j-1]) then break;
+     inc(j);
+    end;
+   if(j>tempfinal.SecCount) then continue;
+   startoffset:=tempfinal.SecAddress[j-1]+ldfile.Adjust.SrcOffset[i-1];
+   for k:=1 to ldfile.Adjust.Count do
+    begin
+     if(i=k) then break;
+     index:=ldfile.Adjust.SrcIndex[k-1];
+     if(ldfile.SecName[index-1]='.debug_frame') and (debugframe=false) then continue;
+     j:=1;
+     while(j<=tempfinal.SecCount)do
+      begin
+       if(ldfile.SecName[index-1]=tempfinal.SecName[j-1]) then break;
+       inc(j);
+      end;
+     if(j>tempfinal.SecCount) then continue;
+     compareoffset:=tempfinal.SecAddress[j-1]+ldfile.Adjust.SrcOffset[k-1];
+     if(startoffset>compareoffset) then inc(AdjustOrder[i-1]);
+    end;
+  end;
+ {For AArch64 Architecture Only}
+ movesecoffset:=0; movesecoffset2:=0;
+ writepos[1]:=3; writepos[2]:=3;
+ if(ldarch=elf_machine_aarch64) then
+  begin
+   for k:=1 to ldfile.Adjust.Count do
+    begin
+     i:=1;
+     while(i<=ldfile.Adjust.Count)do
+      begin
+       if(AdjustOrder[i-1]+1=k) then break;
+       inc(i);
+      end;
+     if(i>ldfile.Adjust.Count) then continue;
+     index:=ldfile.Adjust.SrcIndex[i-1];
+     if(ldfile.SecName[index-1]='.debug_frame') and (debugframe=false) then continue;
+     j:=1;
+     while(j<=tempfinal.SecCount)do
+      begin
+       if(ldfile.SecName[index-1]=tempfinal.SecName[j-1]) then break;
+       inc(j);
+      end;
+     if(j>tempfinal.SecCount) then continue;
+     startoffset:=tempfinal.SecAddress[j-1]+ldfile.Adjust.SrcOffset[i-1];
+     changeptr:=tempfinal.SecContent[j-1]+ldfile.Adjust.Srcoffset[i-1];
+     tempindex:=j;
+     index:=ldfile.Adjust.DestIndex[i-1];
+     if(index>0) then
+      begin
+       if(ldfile.SecName[index-1]='.debug_frame') and (debugframe=false) then continue;
+       j:=1;
+       while(j<=tempfinal.SecCount)do
+        begin
+         if(ldfile.SecName[index-1]=tempfinal.SecName[j-1]) then break;
+         inc(j);
+        end;
+       if(j>tempfinal.SecCount) then continue;
+      end;
+     tempindex2:=j;
+     if(ld_formula_check_got(ldfile.Adjust.Formula[i-1])) then
+      begin
+       j:=1; writepos[1]:=0; writepos[2]:=0;
+       while(j<=length(tempfinal.GotSymbol))do
+        begin
+         if(ldfile.Adjust.DestName[i-1]=tempfinal.GotSymbol[j-1]) then
+          begin
+           writepos[1]:=2+j; break;
+          end;
+         inc(j);
+        end;
+       if(j>length(tempfinal.GotSymbol)) then offset1:=j else offset1:=0;
+       j:=1;
+       while(j<=length(tempfinal.GotPltSymbol))do
+        begin
+         if(ldfile.Adjust.DestName[i-1]=tempfinal.GotPltSymbol[j-1]) then
+          begin
+           writepos[2]:=2+j; break;
+          end;
+         inc(j);
+        end;
+       if(j>length(tempfinal.GotPltSymbol)) then offset2:=length(tempfinal.GotSymbol)+j else offset2:=0;
+      end;
+     endoffset:=tempfinal.SecAddress[j-1]+ldfile.Adjust.DestOffset[i-1];
+     isexternal:=false;
+     if(isgotbase) or (isgotoffset) then
+      begin
+       j:=1; writepos[1]:=0; writepos[2]:=0;
+       while(j<=length(tempfinal.GotSymbol))do
+        begin
+         if(ldfile.Adjust.DestName[i-1]=tempfinal.GotSymbol[j-1]) then
+          begin
+           writepos[1]:=2+j; break;
+          end;
+         inc(j);
+        end;
+       if(j<=length(tempfinal.GotSymbol)) then offset1:=j else offset1:=0;
+       j:=1;
+       while(j<=length(tempfinal.GotPltSymbol))do
+        begin
+         if(ldfile.Adjust.DestName[i-1]=tempfinal.GotPltSymbol[j-1]) then
+          begin
+           writepos[2]:=2+j; isexternal:=true; break;
+          end;
+         inc(j);
+        end;
+       if(j<=length(tempfinal.GotPltSymbol)) then offset2:=length(tempfinal.GotSymbol)+j else offset2:=0;
+      end;
+     if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_aarch64_adrp_page_rel_bit32_12)
+     or(ldfile.Adjust.AdjustType[i-1]=elf_reloc_aarch64_adrp_page_rel_bit32_12_no_check)
+     or(ldfile.Adjust.AdjustType[i-1]=elf_reloc_aarch64_page_rel_adrp_bit32_12) then
+      begin
+       tempnum3:=0; tempnum4:=1;
+       if(ld_formula_check_got(ldfile.Adjust.Formula[i-1])) then
+        begin
+         tempresult:=ld_align_floor(tempfinal.SecAddress[gotindex-1]
+         +writepos[1]*ldbit shl 2+ldfile.Adjust.Addend[i-1],$1000)-
+         ld_align_floor(startoffset,$1000);
+        end
+       else
+       tempresult:=ld_align_floor(endoffset+ldfile.Adjust.Addend[i-1],$1000)-
+       ld_align_floor(startoffset,$1000);
+       tempresult2:=tempresult;
+       movesecoffset:=0; movesecoffset2:=0;
+       while(tempnum3<>tempnum4) or (tempresult<>tempresult2) do
+        begin
+         startoffset:=tempfinal.SecAddress[tempindex-1]+ldfile.Adjust.SrcOffset[i-1];
+         endoffset:=tempfinal.SecAddress[tempindex2-1]+ldfile.Adjust.DestOffset[i-1];
+         changeptr:=tempfinal.SecContent[tempindex-1]+ldfile.Adjust.SrcOffset[i-1];
+         tempresult:=tempresult2;
+         tempnum1:=ld_align_floor(startoffset,$1000);
+         if(ld_formula_check_got(ldfile.Adjust.Formula[i-1])) then
+          begin
+           tempnum2:=tempfinal.SecAddress[gotindex-1]
+           +writepos[1]*ldbit shl 2+ldfile.Adjust.Addend[i-1];
+          end
+         else tempnum2:=endoffset+ldfile.Adjust.Addend[i-1];
+         tempnum3:=tempnum2-tempnum1-tempresult;
+         movesecoffset:=0;
+         if(Abs(tempnum3)>=4096) and (Abs(tempnum3) mod 4096<>0) then
+          begin
+           if(ldfile.Adjust.SrcOffset[i-1]+8<=tempfinal.SecSize[tempindex-1]) and
+           (Pld_aarch64_add_or_sub_immediate(changeptr+4)^.FixedValue=
+           ld_aarch64_add_or_sub_fixed_value) and
+           (Pld_aarch64_add_or_sub_immediate(changeptr+4)^.Rd=Pdword(changeptr)^ and $1F) then
+            begin
+             if(tempnum3>=4096) and (tempnum3 mod 4096=0) then
+              begin
+              end
+             else if(tempnum3>=4096) then inc(movesecoffset,4)
+            end
+           else inc(movesecoffset,8);
+          end
+         else if(Abs(tempnum3)>=4096) then
+          begin
+           if(ldfile.Adjust.SrcOffset[i-1]+8<=tempfinal.SecSize[tempindex-1]) and
+           (Pld_aarch64_add_or_sub_immediate(changeptr+4)^.FixedValue=
+           ld_aarch64_add_or_sub_fixed_value) and
+           (Pld_aarch64_add_or_sub_immediate(changeptr+4)^.Rd=Pdword(changeptr)^ and $1F) then
+            begin
+            end
+           else inc(movesecoffset,4);
+          end
+         else if(Abs(tempnum3)<>0) then
+          begin
+           if(ldfile.Adjust.SrcOffset[i-1]+8<=tempfinal.SecSize[tempindex-1]) and
+           (Pld_aarch64_add_or_sub_immediate(changeptr+4)^.FixedValue=
+           ld_aarch64_add_or_sub_fixed_value) and
+           (Pld_aarch64_add_or_sub_immediate(changeptr+4)^.Rd=Pdword(changeptr)^ and $1F) then
+            begin
+            end
+           else inc(movesecoffset,4);
+          end;
+         if(ldfile.Adjust.SrcOffset[i-1]+8<=tempfinal.SecSize[tempindex-1])
+         and (Pld_aarch64_add_or_sub_immediate(changeptr+4)^.FixedValue=
+         ld_aarch64_add_or_sub_fixed_value) and
+         (Pld_aarch64_add_or_sub_immediate(changeptr+4)^.Rd=Pdword(changeptr)^ and $1F) and
+         (Pld_aarch64_add_or_sub_immediate(changeptr+4)^.Imm12=0) then
+          begin
+           dec(movesecoffset,4);
+          end;
+         m:=1; tempindex3:=0; tempindex4:=0;
+         while(m<=tempfinal.SecCount-1) do
+          begin
+           n:=1;
+           while(n<=tempfinal.SecCount)do
+            begin
+             if(tempfinal.SecIndex[n-1]=m) then break;
+             inc(n);
+            end;
+           tempindex3:=n;
+           n:=1;
+           while(n<=tempfinal.SecCount)do
+            begin
+             if(tempfinal.SecIndex[n-1]=m+1) then break;
+             inc(n);
+            end;
+           tempindex4:=n;
+           if(tempindex4=0) then break;
+           if(tempfinal.SecAddress[tempindex3-1]+tempfinal.SecSize[tempindex3-1]<=
+           tempfinal.SecAddress[tempindex4-1]) then
+            begin
+             if(tempfinal.SecName[tempindex4-1]='.text')
+             or(tempfinal.SecName[tempindex4-1]='.rodata')
+             or(tempfinal.SecName[tempindex4-1]='.data') then
+              begin
+               if(ld_align(tempfinal.SecAddress[tempindex4-1],align)-
+               (tempfinal.SecAddress[tempindex3-1]+tempfinal.SecSize[tempindex3-1])>=align) then
+                begin
+                 ld_calculate_behind(DynQwordArray(tempfinal.SecAddress),
+                 DynWordArray(tempfinal.SecIndex),
+                 tempfinal.SecIndex[tempindex4-1],-align);
+                end;
+              end
+             else if(tempfinal.SecName[tempindex3-1]<>'.bss') and
+             (tempfinal.SecName[tempindex3-1]<>'.tbss') then
+              begin
+               if(tempfinal.SecAddress[tempindex4-1]-
+               (tempfinal.SecAddress[tempindex3-1]+tempfinal.SecSize[tempindex3-1])>=ldbit shl 2) then
+                begin
+                 ld_calculate_behind(DynQwordArray(tempfinal.SecAddress),
+                 DynWordArray(tempfinal.SecIndex),
+                 tempfinal.SecIndex[tempindex4-1],-ldbit shl 2);
+                end;
+              end
+             else
+              begin
+               if(tempfinal.SecAddress[tempindex4-1]-tempfinal.SecAddress[tempindex3-1]>=ldbit shl 2) then
+                begin
+                 ld_calculate_behind(DynQwordArray(tempfinal.SecAddress),
+                 DynwordArray(tempfinal.SecIndex),
+                 tempfinal.SecIndex[tempindex4-1],-ldbit shl 2);
+                end;
+              end;
+            end
+           else
+            begin
+             if(tempfinal.SecName[tempindex4-1]='.text')
+             or(tempfinal.SecName[tempindex4-1]='.rodata')
+             or(tempfinal.SecName[tempindex4-1]='.data') then
+              begin
+               if(ld_align(tempfinal.SecAddress[tempindex4-1],align)-
+               (tempfinal.SecAddress[tempindex3-1]+tempfinal.SecSize[tempindex3-1])<=0) then
+                begin
+                 ld_calculate_behind(DynQwordArray(tempfinal.SecAddress),
+                 DynWordArray(tempfinal.SecIndex),
+                 tempfinal.SecIndex[tempindex4-1],align);
+                end;
+              end
+             else if(tempfinal.SecName[tempindex3-1]<>'.bss') and
+             (tempfinal.SecName[tempindex3-1]<>'.tbss') then
+              begin
+               if(tempfinal.SecAddress[tempindex4-1]-
+               (tempfinal.SecAddress[tempindex3-1]+tempfinal.SecSize[tempindex3-1])<=0) then
+                begin
+                 ld_calculate_behind(DynQwordArray(tempfinal.SecAddress),
+                 DynWordArray(tempfinal.SecIndex),
+                 tempfinal.SecIndex[tempindex4-1],ldbit shl 2);
+                end;
+              end
+             else
+              begin
+               if(tempfinal.SecAddress[tempindex4-1]-
+               (tempfinal.SecAddress[tempindex3-1]+tempfinal.SecSize[tempindex3-1])<0) then
+                begin
+                 ld_calculate_behind(DynQwordArray(tempfinal.SecAddress),
+                 DynWordArray(tempfinal.SecIndex),
+                 tempfinal.SecIndex[tempindex4-1],ldbit shl 2);
+                end;
+              end;
+            end;
+           inc(m);
+          end;
+         startoffset:=tempfinal.SecAddress[tempindex-1]+ldfile.Adjust.SrcOffset[i-1];
+         if(tempindex=tempindex2) and (ldfile.Adjust.SrcOffset[i-1]<ldfile.Adjust.DestOffset[i-1]) then
+         endoffset:=tempfinal.SecAddress[tempindex2-1]+ldfile.Adjust.DestOffset[i-1]+movesecoffset
+         else
+         endoffset:=tempfinal.SecAddress[tempindex2-1]+ldfile.Adjust.DestOffset[i-1];
+         if(ld_formula_check_got(ldfile.Adjust.Formula[i-1])) then
+          begin
+           tempresult2:=ld_align_floor(tempfinal.SecAddress[gotindex-1]
+           +writepos[1]*ldbit shl 2+ldfile.Adjust.Addend[i-1],$1000)-
+           ld_align_floor(startoffset,$1000);
+          end
+         else
+         tempresult2:=ld_align_floor(endoffset+ldfile.Adjust.Addend[i-1],$1000)-
+         ld_align_floor(startoffset,$1000);
+         tempnum1:=ld_align_floor(startoffset,$1000);
+         if(ld_formula_check_got(ldfile.Adjust.Formula[i-1])) then
+          begin
+           tempnum2:=tempfinal.SecAddress[gotindex-1]
+           +writepos[1]*ldbit shl 2+ldfile.Adjust.Addend[i-1];
+          end
+         else tempnum2:=endoffset+ldfile.Adjust.Addend[i-1];
+         tempnum4:=tempnum2-tempnum1-tempresult2;
+         if(tempnum3<>tempnum4) or (tempresult<>tempresult2) then continue;
+         if(Pld_aarch64_ld_or_st_immediate_12(changeptr+4)^.Opcode=1)
+         and (Pld_aarch64_ld_or_st_immediate_12(changeptr+4)^.Size>=2)
+         and (Pld_aarch64_ld_or_st_immediate_12(changeptr+4)^.Reserved2=7) then
+          begin
+           if(Pld_aarch64_ld_or_st_immediate_12(changeptr+4)^.Unsigned=1) then
+            begin
+             if(Pld_aarch64_ld_or_st_immediate_12(changeptr+4)^.Size=2) then
+              begin
+               if(tempnum3>$FFF shl 2) then dec(tempnum3,$FFF shl 2)
+               else
+                begin
+                 tempnum3:=0; break;
+                end;
+              end
+             else if(Pld_aarch64_ld_or_st_immediate_12(changeptr+4)^.Size=3) then
+              begin
+               if(tempnum3>$FFF shl 3) then dec(tempnum3,$FFF shl 3)
+               else
+                begin
+                 tempnum3:=0; break;
+                end;
+              end;
+            end
+           else
+            begin
+             if(Abs(tempnum3)<=$1FF) then
+              begin
+               tempnum3:=0; break;
+              end
+             else if(tempnum3>0) then dec(tempnum3,$1FF)
+             else if(tempnum3<0) then inc(tempnum3,$1FF);
+            end;
+          end;
+         if(Abs(tempnum3)>=4096) and (Abs(tempnum3) mod 4096<>0) then
+          begin
+           if(ldfile.Adjust.SrcOffset[i-1]+12<=tempfinal.SecSize[tempindex-1]) and
+           (Pld_aarch64_add_or_sub_immediate(changeptr+4)^.FixedValue=
+           ld_aarch64_add_or_sub_fixed_value) and
+           (Pld_aarch64_add_or_sub_immediate(changeptr+8)^.FixedValue=
+           ld_aarch64_add_or_sub_fixed_value) and
+           (Pld_aarch64_add_or_sub_immediate(changeptr+4)^.Rd=Pdword(changeptr)^ and $1F) and
+           (Pld_aarch64_add_or_sub_immediate(changeptr+8)^.Rd=Pdword(changeptr)^ and $1F) then
+            begin
+             Pld_aarch64_add_or_sub_immediate(changeptr+4)^.Opcode:=tempnum3<0;
+             Pld_aarch64_add_or_sub_immediate(changeptr+4)^.Imm12:=Abs(tempnum3) shr 12;
+             Pld_aarch64_add_or_sub_immediate(changeptr+4)^.Shift:=1;
+             Pld_aarch64_add_or_sub_immediate(changeptr+8)^.Opcode:=tempnum3<0;
+             Pld_aarch64_add_or_sub_immediate(changeptr+8)^.Imm12:=Abs(tempnum3) and $FFF;
+             Pld_aarch64_add_or_sub_immediate(changeptr+8)^.Shift:=0;
+            end
+           else if(ldfile.Adjust.SrcOffset[i-1]+8<=tempfinal.SecSize[tempindex-1]) and
+           (Pld_aarch64_add_or_sub_immediate(changeptr+4)^.FixedValue=
+           ld_aarch64_add_or_sub_fixed_value) and
+           (Pld_aarch64_add_or_sub_immediate(changeptr+4)^.Rd=Pdword(changeptr)^ and $1F) then
+            begin
+             if(Abs(tempnum3)>=4096) and (Abs(tempnum3) mod 4096=0) then
+              begin
+               Pld_aarch64_add_or_sub_immediate(changeptr+4)^.Opcode:=tempnum3<0;
+               Pld_aarch64_add_or_sub_immediate(changeptr+4)^.Imm12:=Abs(tempnum3) shr 12;
+               Pld_aarch64_add_or_sub_immediate(changeptr+4)^.Shift:=1;
+              end
+             else if(Abs(tempnum3)>=4096) then
+              begin
+               Pld_aarch64_add_or_sub_immediate(changeptr+4)^.Opcode:=tempnum3<0;
+               Pld_aarch64_add_or_sub_immediate(changeptr+4)^.Imm12:=Abs(tempnum3) shr 12;
+               Pld_aarch64_add_or_sub_immediate(changeptr+4)^.Shift:=1;
+               inc(tempfinal.SecSize[tempindex-1],8);
+               tydq_reallocMem(tempfinal.SecContent[tempindex-1],tempfinal.SecSize[tempindex-1]);
+               changeptr:=tempfinal.SecContent[tempindex-1]+ldfile.Adjust.SrcOffset[i-1];
+               tydq_move_inverse(Pbyte(changeptr+8)^,Pbyte(changeptr+12)^,
+               tempfinal.SecSize[tempindex-1]-ldfile.Adjust.Srcoffset[i-1]-12);
+               if(tempnum3>0) then
+               Pdword(changeptr+8)^:=
+               ld_aarch64_stub_add(Pdword(changeptr)^ and $1F,Abs(tempnum3) and $FFF,false,ldbit=2)
+               else
+               Pdword(changeptr+8)^:=
+               ld_aarch64_stub_sub(Pdword(changeptr)^ and $1F,Abs(tempnum3) and $FFF,false,ldbit=2);
+               inc(movesecoffset2,4);
+              end
+             else
+              begin
+               Pld_aarch64_add_or_sub_immediate(changeptr+4)^.Opcode:=tempnum3<0;
+               Pld_aarch64_add_or_sub_immediate(changeptr+4)^.Imm12:=Abs(tempnum3) and $FFF;
+               Pld_aarch64_add_or_sub_immediate(changeptr+4)^.Shift:=0;
+              end;
+            end
+           else
+            begin
+             inc(tempfinal.SecSize[tempindex-1],8);
+             tydq_reallocMem(tempfinal.SecContent[tempindex-1],tempfinal.SecSize[tempindex-1]);
+             changeptr:=tempfinal.SecContent[tempindex-1]+ldfile.Adjust.SrcOffset[i-1];
+             tydq_move_inverse(Pbyte(changeptr+4)^,Pbyte(changeptr+12)^,
+             tempfinal.SecSize[tempindex-1]-ldfile.Adjust.Srcoffset[i-1]-12);
+             if(tempnum3>0) then
+             Pdword(changeptr+4)^:=
+             ld_aarch64_stub_add(Pdword(changeptr)^ and $1F,(Abs(tempnum3) shr 12) and $FFF,true,ldbit=2)
+             else
+             Pdword(changeptr+4)^:=
+             ld_aarch64_stub_sub(Pdword(changeptr)^ and $1F,(Abs(tempnum3) shr 12) and $FFF,true,ldbit=2);
+             if(tempnum3>0) then
+             Pdword(changeptr+8)^:=
+             ld_aarch64_stub_add(Pdword(changeptr)^ and $1F,Abs(tempnum3) and $FFF,false,ldbit=2)
+             else
+             Pdword(changeptr+8)^:=
+             ld_aarch64_stub_sub(Pdword(changeptr)^ and $1F,Abs(tempnum3) and $FFF,false,ldbit=2);
+             inc(movesecoffset2,8);
+            end;
+          end
+         else if(Abs(tempnum3)>=4096) then
+          begin
+           if(ldfile.Adjust.SrcOffset[i-1]+8<=tempfinal.SecSize[tempindex-1]) and
+           (Pld_aarch64_add_or_sub_immediate(changeptr+4)^.FixedValue=
+           ld_aarch64_add_or_sub_fixed_value) and
+           (Pld_aarch64_add_or_sub_immediate(changeptr+4)^.Rd=Pdword(changeptr)^ and $1F) then
+            begin
+             Pld_aarch64_add_or_sub_immediate(changeptr+4)^.Opcode:=tempnum3<0;
+             Pld_aarch64_add_or_sub_immediate(changeptr+4)^.Imm12:=Abs(tempnum3) shr 12;
+             Pld_aarch64_add_or_sub_immediate(changeptr+4)^.Shift:=1;
+            end
+           else
+            begin
+             inc(tempfinal.SecSize[tempindex-1],4);
+             tydq_reallocMem(tempfinal.SecContent[tempindex-1],tempfinal.SecSize[tempindex-1]);
+             changeptr:=tempfinal.SecContent[tempindex-1]+ldfile.Adjust.SrcOffset[i-1];
+             tydq_move_inverse(Pbyte(changeptr+4)^,Pbyte(changeptr+8)^,
+             tempfinal.SecSize[tempindex-1]-ldfile.Adjust.Srcoffset[i-1]-8);
+             if(tempnum3>0) then
+             Pdword(changeptr+4)^:=
+             ld_aarch64_stub_add(Pdword(changeptr)^ and $1F,Abs(tempnum3) and $FFF,false,ldbit=2)
+             else
+             Pdword(changeptr+4)^:=
+             ld_aarch64_stub_sub(Pdword(changeptr)^ and $1F,Abs(tempnum3) and $FFF,false,ldbit=2);
+             inc(movesecoffset2,4);
+            end;
+          end
+         else if(Abs(tempnum3)<>0) then
+          begin
+           if(ldfile.Adjust.SrcOffset[i-1]+8<=tempfinal.SecSize[tempindex-1]) and
+           (Pld_aarch64_add_or_sub_immediate(changeptr+4)^.FixedValue=
+           ld_aarch64_add_or_sub_fixed_value) and
+           (Pld_aarch64_add_or_sub_immediate(changeptr+4)^.Rd=Pdword(changeptr)^ and $1F) then
+            begin
+             Pld_aarch64_add_or_sub_immediate(changeptr+4)^.Opcode:=tempnum3<0;
+             Pld_aarch64_add_or_sub_immediate(changeptr+4)^.Imm12:=Abs(tempnum3);
+            end
+           else
+            begin
+             inc(tempfinal.SecSize[tempindex-1],4);
+             tydq_reallocMem(tempfinal.SecContent[tempindex-1],tempfinal.SecSize[tempindex-1]);
+             changeptr:=tempfinal.SecContent[tempindex-1]+ldfile.Adjust.SrcOffset[i-1];
+             tydq_move_inverse(Pbyte(changeptr+4)^,Pbyte(changeptr+8)^,
+             tempfinal.SecSize[tempindex-1]-ldfile.Adjust.Srcoffset[i-1]-8);
+             if(tempnum3>0) then
+             Pdword(changeptr+4)^:=
+             ld_aarch64_stub_add(Pdword(changeptr)^ and $1F,Abs(tempnum3) and $FFF,false,ldbit=2)
+             else
+             Pdword(changeptr+4)^:=
+             ld_aarch64_stub_sub(Pdword(changeptr)^ and $1F,Abs(tempnum3) and $FFF,false,ldbit=2);
+             inc(movesecoffset2,4);
+            end;
+          end;
+         changeptr:=tempfinal.SecContent[tempindex-1]+ldfile.Adjust.SrcOffset[i-1];
+         if(ldfile.Adjust.SrcOffset[i-1]+8<=tempfinal.SecSize[tempindex-1])
+         and (Pld_aarch64_add_or_sub_immediate(changeptr+4)^.FixedValue=
+         ld_aarch64_add_or_sub_fixed_value) and
+         (Pld_aarch64_add_or_sub_immediate(changeptr+4)^.Rd=Pdword(changeptr)^ and $1F) and
+         (Pld_aarch64_add_or_sub_immediate(changeptr+4)^.Imm12=0) then
+          begin
+           tydq_move(Pbyte(changeptr+8)^,Pbyte(changeptr+4)^,
+           tempfinal.SecSize[tempindex-1]-ldfile.Adjust.Srcoffset[i-1]-8);
+           dec(tempfinal.SecSize[tempindex-1],4);
+           tydq_reallocMem(tempfinal.SecContent[tempindex-1],tempfinal.SecSize[tempindex-1]);
+           dec(movesecoffset2,4);
+          end;
+         if(movesecoffset2<>0) then
+          begin
+           m:=1; tempindex3:=0; tempindex4:=0;
+           while(m<=tempfinal.SecCount-1) do
+            begin
+             n:=1;
+             while(n<=tempfinal.SecCount)do
+              begin
+               if(tempfinal.SecIndex[n-1]=m) then break;
+               inc(n);
+              end;
+             if(n<=tempfinal.SecCount) then tempindex3:=n else tempindex3:=0;
+             if(tempindex3=0) then break;
+             n:=1;
+             while(n<=tempfinal.SecCount)do
+              begin
+               if(tempfinal.SecIndex[n-1]=m+1) then break;
+               inc(n);
+              end;
+             if(n<=tempfinal.SecCount) then tempindex4:=n else tempindex4:=0;
+             if(tempindex4=0) then break;
+             if(tempfinal.SecAddress[tempindex3-1]+tempfinal.SecSize[tempindex3-1]<=
+             tempfinal.SecAddress[tempindex4-1]) then
+              begin
+               if(tempfinal.SecName[tempindex4-1]='.text')
+               or(tempfinal.SecName[tempindex4-1]='.rodata')
+               or(tempfinal.SecName[tempindex4-1]='.data') then
+                begin
+                 if(ld_align(tempfinal.SecAddress[tempindex4-1],align)-
+                 (tempfinal.SecAddress[tempindex3-1]+tempfinal.SecSize[tempindex3-1])>=align) then
+                  begin
+                   ld_calculate_behind(DynQwordArray(tempfinal.SecAddress),
+                   DynWordArray(tempfinal.SecIndex),
+                   tempfinal.SecIndex[tempindex4-1],-align);
+                  end;
+                end
+               else if(tempfinal.SecName[tempindex3-1]<>'.bss') and
+               (tempfinal.SecName[tempindex3-1]<>'.tbss') then
+                begin
+                 if(tempfinal.SecAddress[tempindex4-1]-
+                 (tempfinal.SecAddress[tempindex3-1]+tempfinal.SecSize[tempindex3-1])>=ldbit shl 2) then
+                  begin
+                   ld_calculate_behind(DynQwordArray(tempfinal.SecAddress),
+                   DynWordArray(tempfinal.SecIndex),
+                   tempfinal.SecIndex[tempindex4-1],-ldbit shl 2);
+                  end;
+                end
+               else
+                begin
+                 if(tempfinal.SecAddress[tempindex4-1]-tempfinal.SecAddress[tempindex3-1]>=ldbit shl 2) then
+                  begin
+                   ld_calculate_behind(DynQwordArray(tempfinal.SecAddress),
+                   DynwordArray(tempfinal.SecIndex),
+                   tempfinal.SecIndex[tempindex4-1],-ldbit shl 2);
+                  end;
+                end;
+              end
+             else
+              begin
+               if(tempfinal.SecName[tempindex4-1]='.text')
+               or(tempfinal.SecName[tempindex4-1]='.rodata')
+               or(tempfinal.SecName[tempindex4-1]='.data') then
+                begin
+                 if(ld_align(tempfinal.SecAddress[tempindex4-1],align)-
+                 (tempfinal.SecAddress[tempindex3-1]+tempfinal.SecSize[tempindex3-1])<=0) then
+                  begin
+                   ld_calculate_behind(DynQwordArray(tempfinal.SecAddress),
+                   DynWordArray(tempfinal.SecIndex),
+                   tempfinal.SecIndex[tempindex4-1],align);
+                  end;
+                end
+               else if(tempfinal.SecName[tempindex3-1]<>'.bss') and
+               (tempfinal.SecName[tempindex3-1]<>'.tbss') then
+                begin
+                 if(tempfinal.SecAddress[tempindex4-1]-
+                 (tempfinal.SecAddress[tempindex3-1]+tempfinal.SecSize[tempindex3-1])<=0) then
+                  begin
+                   ld_calculate_behind(DynQwordArray(tempfinal.SecAddress),
+                   DynWordArray(tempfinal.SecIndex),
+                   tempfinal.SecIndex[tempindex4-1],ldbit shl 2);
+                  end;
+                end
+               else
+                begin
+                 if(tempfinal.SecAddress[tempindex4-1]-
+                 (tempfinal.SecAddress[tempindex3-1]+tempfinal.SecSize[tempindex3-1])<0) then
+                  begin
+                   ld_calculate_behind(DynQwordArray(tempfinal.SecAddress),
+                   DynWordArray(tempfinal.SecIndex),
+                   tempfinal.SecIndex[tempindex4-1],ldbit shl 2);
+                  end;
+                end;
+              end;
+            inc(m);
+           end;
+           for m:=1 to ldfile.Adjust.Count do
+            begin
+             if(ldfile.Adjust.AdjustType[m-1]=0) then continue;
+             if(ldfile.Adjust.SrcIndex[i-1]=ldfile.Adjust.SrcIndex[m-1]) then
+              begin
+               if(ldfile.Adjust.SrcOffset[i-1]+4<=ldfile.Adjust.SrcOffset[m-1]) then
+                begin
+                 inc(ldfile.Adjust.SrcOffset[m-1],movesecoffset2);
+                end;
+              end;
+             if(ldfile.Adjust.SrcIndex[i-1]=ldfile.Adjust.DestIndex[m-1]) then
+              begin
+               if(ldfile.Adjust.SrcOffset[i-1]+4<=ldfile.Adjust.DestOffset[m-1]) then
+                begin
+                 inc(ldfile.Adjust.DestOffset[m-1],movesecoffset2);
+                end;
+              end;
+            end;
+           for m:=1 to ldfile.SymTable.SymbolCount do
+            begin
+             if(ldfile.Adjust.AdjustType[m-1]=0) then continue;
+             if(ldfile.Adjust.SrcIndex[i-1]=ldfile.SymTable.SymbolIndex[m-1]) then
+              begin
+               if(ldfile.Adjust.SrcOffset[i-1]+4<=ldfile.SymTable.SymbolValue[m-1]) then
+                begin
+                 inc(ldfile.SymTable.SymbolValue[m-1],movesecoffset2);
+                end
+               else if(ldfile.Adjust.SrcOffset[i-1]=ldfile.SymTable.SymbolValue[m-1]) then
+                begin
+                 inc(ldfile.SymTable.SymbolSize[m-1],movesecoffset2);
+                end;
+              end;
+            end;
+           if(ldfile.Adjust.SrcIndex[i-1]=ldfile.EntryIndex) and
+           (ldfile.Adjust.SrcOffset[i-1]+4<=ldfile.EntryOffset) then
+            begin
+             inc(ldfile.EntryOffset,movesecoffset2);
+            end;
+           movesecoffset2:=0;
+          end;
+        end;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_aarch64_dir_got_offset_ld_st_imm_bit11_3) then
+      begin
+       if(ld_formula_check_got(ldfile.Adjust.Formula[i-1])) then
+        begin
+         if(isexternal) then
+         tempresult:=tempfinal.SecAddress[gotpltindex-1]
+         +writepos[2]*ldbit shl 2+ldfile.Adjust.Addend[i-1]
+         else
+         tempresult:=tempfinal.SecAddress[gotindex-1]
+         +writepos[1]*ldbit shl 2+ldfile.Adjust.Addend[i-1];
+        end
+       else tempresult:=endoffset+ldfile.Adjust.Addend[i-1];
+       tempresult:=(tempresult shr 3) and $1FF;
+       if(tempresult=0) and
+       (Pld_aarch64_ld_or_st_immediate_12(changeptr)^.Rd=
+        Pld_aarch64_ld_or_st_immediate_12(changeptr)^.Rn) then
+        begin
+         changeptr:=tempfinal.SecContent[tempindex-1]+ldfile.Adjust.Srcoffset[i-1];
+         tydq_move(Pbyte(changeptr+4)^,Pbyte(changeptr+0)^,
+         tempfinal.SecSize[tempindex-1]-ldfile.Adjust.Srcoffset[i-1]-4);
+         dec(tempfinal.SecSize[tempindex-1],4);
+         tydq_reallocMem(tempfinal.SecContent[tempindex-1],tempfinal.SecSize[tempindex-1]);
+         m:=1; tempindex3:=0; tempindex4:=0;
+         while(m<=tempfinal.SecCount-1) do
+          begin
+           n:=1;
+           while(n<=tempfinal.SecCount)do
+            begin
+             if(tempfinal.SecIndex[n-1]=m) then break;
+             inc(n);
+            end;
+           if(n<=tempfinal.SecCount) then tempindex3:=n else tempindex3:=0;
+           if(tempindex3=0) then break;
+           n:=1;
+           while(n<=tempfinal.SecCount)do
+            begin
+             if(tempfinal.SecIndex[n-1]=m+1) then break;
+             inc(n);
+            end;
+           if(n<=tempfinal.SecCount) then tempindex4:=n else tempindex4:=0;
+           if(tempindex4=0) then break;
+           if(tempfinal.SecAddress[tempindex3-1]+tempfinal.SecSize[tempindex3-1]<=
+             tempfinal.SecAddress[tempindex4-1]) then
+              begin
+               if(tempfinal.SecName[tempindex4-1]='.text')
+               or(tempfinal.SecName[tempindex4-1]='.rodata')
+               or(tempfinal.SecName[tempindex4-1]='.data') then
+                begin
+                 if(ld_align(tempfinal.SecAddress[tempindex4-1],align)-
+                 (tempfinal.SecAddress[tempindex3-1]+tempfinal.SecSize[tempindex3-1])>=align) then
+                  begin
+                   ld_calculate_behind(DynQwordArray(tempfinal.SecAddress),
+                   DynWordArray(tempfinal.SecIndex),
+                   tempfinal.SecIndex[tempindex4-1],-align);
+                  end;
+                end
+               else if(tempfinal.SecName[tempindex3-1]<>'.bss') and
+               (tempfinal.SecName[tempindex3-1]<>'.tbss') then
+                begin
+                 if(tempfinal.SecAddress[tempindex4-1]-
+                 (tempfinal.SecAddress[tempindex3-1]+tempfinal.SecSize[tempindex3-1])>=ldbit shl 2) then
+                  begin
+                   ld_calculate_behind(DynQwordArray(tempfinal.SecAddress),
+                   DynWordArray(tempfinal.SecIndex),
+                   tempfinal.SecIndex[tempindex4-1],-ldbit shl 2);
+                  end;
+                end
+               else
+                begin
+                 if(tempfinal.SecAddress[tempindex4-1]-tempfinal.SecAddress[tempindex3-1]>=ldbit shl 2) then
+                  begin
+                   ld_calculate_behind(DynQwordArray(tempfinal.SecAddress),
+                   DynwordArray(tempfinal.SecIndex),
+                   tempfinal.SecIndex[tempindex4-1],-ldbit shl 2);
+                  end;
+                end;
+              end
+             else
+              begin
+               if(tempfinal.SecName[tempindex4-1]='.text')
+               or(tempfinal.SecName[tempindex4-1]='.rodata')
+               or(tempfinal.SecName[tempindex4-1]='.data') then
+                begin
+                 if(ld_align(tempfinal.SecAddress[tempindex4-1],align)-
+                 (tempfinal.SecAddress[tempindex3-1]+tempfinal.SecSize[tempindex3-1])<=0) then
+                  begin
+                   ld_calculate_behind(DynQwordArray(tempfinal.SecAddress),
+                   DynWordArray(tempfinal.SecIndex),
+                   tempfinal.SecIndex[tempindex4-1],align);
+                  end;
+                end
+               else if(tempfinal.SecName[tempindex3-1]<>'.bss') and
+               (tempfinal.SecName[tempindex3-1]<>'.tbss') then
+                begin
+                 if(tempfinal.SecAddress[tempindex4-1]-
+                 (tempfinal.SecAddress[tempindex3-1]+tempfinal.SecSize[tempindex3-1])<=0) then
+                  begin
+                   ld_calculate_behind(DynQwordArray(tempfinal.SecAddress),
+                   DynWordArray(tempfinal.SecIndex),
+                   tempfinal.SecIndex[tempindex4-1],ldbit shl 2);
+                  end;
+                end
+               else
+                begin
+                 if(tempfinal.SecAddress[tempindex4-1]-
+                 (tempfinal.SecAddress[tempindex3-1]+tempfinal.SecSize[tempindex3-1])<0) then
+                  begin
+                   ld_calculate_behind(DynQwordArray(tempfinal.SecAddress),
+                   DynWordArray(tempfinal.SecIndex),
+                   tempfinal.SecIndex[tempindex4-1],ldbit shl 2);
+                  end;
+                end;
+              end;
+           inc(m);
+          end;
+         for m:=1 to ldfile.Adjust.Count do
+          begin
+           if(ldfile.Adjust.AdjustType[m-1]=0) then continue;
+           if(ldfile.Adjust.SrcIndex[i-1]=ldfile.Adjust.SrcIndex[m-1]) then
+            begin
+             if(ldfile.Adjust.SrcOffset[i-1]+8<=ldfile.Adjust.SrcOffset[m-1]) then
+              begin
+               dec(ldfile.Adjust.SrcOffset[m-1],4);
+              end;
+            end;
+           if(ldfile.Adjust.SrcIndex[i-1]=ldfile.Adjust.DestIndex[m-1]) then
+            begin
+             if(ldfile.Adjust.SrcOffset[i-1]+8<=ldfile.Adjust.DestOffset[m-1]) then
+              begin
+               dec(ldfile.Adjust.DestOffset[m-1],4);
+              end;
+            end;
+          end;
+         for m:=1 to ldfile.SymTable.SymbolCount do
+          begin
+           if(ldfile.Adjust.SrcIndex[i-1]=ldfile.SymTable.SymbolIndex[m-1]) then
+            begin
+             if(ldfile.Adjust.SrcOffset[i-1]+8<=ldfile.SymTable.SymbolValue[m-1]) then
+              begin
+               dec(ldfile.SymTable.SymbolValue[m-1],4);
+              end
+             else if(ldfile.Adjust.SrcOffset[i-1]=ldfile.SymTable.SymbolValue[m-1]) then
+              begin
+               dec(ldfile.SymTable.SymbolSize[m-1],4);
+              end;
+            end;
+          end;
+         if(ldfile.Adjust.SrcIndex[i-1]=ldfile.EntryIndex) and
+         (ldfile.Adjust.SrcOffset[i-1]+8<=ldfile.EntryOffset) then
+          begin
+           dec(ldfile.EntryOffset,4);
+          end;
+        end
+       else if(Abs(tempresult)>$FF) and (Abs(tempresult)<$10FF) then
+        begin
+         inc(tempfinal.SecSize[tempindex-1],4);
+         tydq_reallocMem(tempfinal.SecContent[tempindex-1],tempfinal.SecSize[tempindex-1]);
+         changeptr:=tempfinal.SecContent[tempindex-1]+ldfile.Adjust.SrcOffset[i-1];
+         tydq_move_inverse(Pbyte(changeptr)^,Pbyte(changeptr+4)^,
+         tempfinal.SecSize[tempindex-1]-ldfile.Adjust.Srcoffset[i-1]-4);
+         if(tempresult>0) then
+         Pdword(changeptr)^:=
+         ld_aarch64_stub_add(Pdword(changeptr)^ and $1F,Abs(tempresult-$FF) and $FFF,false,ldbit=2)
+         else
+         Pdword(changeptr)^:=
+         ld_aarch64_stub_sub(Pdword(changeptr)^ and $1F,Abs(tempresult-$FF) and $FFF,false,ldbit=2);
+         m:=1; tempindex3:=0; tempindex4:=0;
+         while(m<=tempfinal.SecCount-1) do
+          begin
+           n:=1;
+           while(n<=tempfinal.SecCount)do
+            begin
+             if(tempfinal.SecIndex[n-1]=m) then break;
+             inc(n);
+            end;
+           if(n<=tempfinal.SecCount) then tempindex3:=n else tempindex3:=0;
+           if(tempindex3=0) then break;
+           n:=1;
+           while(n<=tempfinal.SecCount)do
+            begin
+             if(tempfinal.SecIndex[n-1]=m+1) then break;
+             inc(n);
+            end;
+           if(n<=tempfinal.SecCount) then tempindex4:=n else tempindex4:=0;
+           if(tempindex4=0) then break;
+           if(tempfinal.SecAddress[tempindex3-1]+tempfinal.SecSize[tempindex3-1]<=
+             tempfinal.SecAddress[tempindex4-1]) then
+              begin
+               if(tempfinal.SecName[tempindex4-1]='.text')
+               or(tempfinal.SecName[tempindex4-1]='.rodata')
+               or(tempfinal.SecName[tempindex4-1]='.data') then
+                begin
+                 if(ld_align(tempfinal.SecAddress[tempindex4-1],align)-
+                 (tempfinal.SecAddress[tempindex3-1]+tempfinal.SecSize[tempindex3-1])>=align) then
+                  begin
+                   ld_calculate_behind(DynQwordArray(tempfinal.SecAddress),
+                   DynWordArray(tempfinal.SecIndex),
+                   tempfinal.SecIndex[tempindex4-1],-align);
+                  end;
+                end
+               else if(tempfinal.SecName[tempindex3-1]<>'.bss') and
+               (tempfinal.SecName[tempindex3-1]<>'.tbss') then
+                begin
+                 if(tempfinal.SecAddress[tempindex4-1]-
+                 (tempfinal.SecAddress[tempindex3-1]+tempfinal.SecSize[tempindex3-1])>=ldbit shl 2) then
+                  begin
+                   ld_calculate_behind(DynQwordArray(tempfinal.SecAddress),
+                   DynWordArray(tempfinal.SecIndex),
+                   tempfinal.SecIndex[tempindex4-1],-ldbit shl 2);
+                  end;
+                end
+               else
+                begin
+                 if(tempfinal.SecAddress[tempindex4-1]-tempfinal.SecAddress[tempindex3-1]>=ldbit shl 2) then
+                  begin
+                   ld_calculate_behind(DynQwordArray(tempfinal.SecAddress),
+                   DynwordArray(tempfinal.SecIndex),
+                   tempfinal.SecIndex[tempindex4-1],-ldbit shl 2);
+                  end;
+                end;
+              end
+             else
+              begin
+               if(tempfinal.SecName[tempindex4-1]='.text')
+               or(tempfinal.SecName[tempindex4-1]='.rodata')
+               or(tempfinal.SecName[tempindex4-1]='.data') then
+                begin
+                 if(ld_align(tempfinal.SecAddress[tempindex4-1],align)-
+                 (tempfinal.SecAddress[tempindex3-1]+tempfinal.SecSize[tempindex3-1])<=0) then
+                  begin
+                   ld_calculate_behind(DynQwordArray(tempfinal.SecAddress),
+                   DynWordArray(tempfinal.SecIndex),
+                   tempfinal.SecIndex[tempindex4-1],align);
+                  end;
+                end
+               else if(tempfinal.SecName[tempindex3-1]<>'.bss') and
+               (tempfinal.SecName[tempindex3-1]<>'.tbss') then
+                begin
+                 if(tempfinal.SecAddress[tempindex4-1]-
+                 (tempfinal.SecAddress[tempindex3-1]+tempfinal.SecSize[tempindex3-1])<=0) then
+                  begin
+                   ld_calculate_behind(DynQwordArray(tempfinal.SecAddress),
+                   DynWordArray(tempfinal.SecIndex),
+                   tempfinal.SecIndex[tempindex4-1],ldbit shl 2);
+                  end;
+                end
+               else
+                begin
+                 if(tempfinal.SecAddress[tempindex4-1]-
+                 (tempfinal.SecAddress[tempindex3-1]+tempfinal.SecSize[tempindex3-1])<0) then
+                  begin
+                   ld_calculate_behind(DynQwordArray(tempfinal.SecAddress),
+                   DynWordArray(tempfinal.SecIndex),
+                   tempfinal.SecIndex[tempindex4-1],ldbit shl 2);
+                  end;
+                end;
+              end;
+           inc(m);
+          end;
+         for m:=1 to ldfile.Adjust.Count do
+          begin
+           if(ldfile.Adjust.AdjustType[m-1]=0) then continue;
+           if(ldfile.Adjust.SrcIndex[i-1]=ldfile.Adjust.SrcIndex[m-1]) then
+            begin
+             if(ldfile.Adjust.SrcOffset[i-1]+4<=ldfile.Adjust.SrcOffset[m-1]) then
+              begin
+               inc(ldfile.Adjust.SrcOffset[m-1],4);
+              end;
+            end;
+           if(ldfile.Adjust.SrcIndex[i-1]=ldfile.Adjust.DestIndex[m-1]) then
+            begin
+             if(ldfile.Adjust.SrcOffset[i-1]+4<=ldfile.Adjust.DestOffset[m-1]) then
+              begin
+               inc(ldfile.Adjust.DestOffset[m-1],4);
+              end;
+            end;
+          end;
+         for m:=1 to ldfile.SymTable.SymbolCount do
+          begin
+           if(ldfile.Adjust.SrcIndex[i-1]=ldfile.SymTable.SymbolIndex[m-1]) then
+            begin
+             if(ldfile.Adjust.SrcOffset[i-1]+4<=ldfile.SymTable.SymbolValue[m-1]) then
+              begin
+               inc(ldfile.SymTable.SymbolValue[m-1],4);
+              end
+             else if(ldfile.Adjust.SrcOffset[i-1]=ldfile.SymTable.SymbolValue[m-1]) then
+              begin
+               inc(ldfile.SymTable.SymbolSize[m-1],4);
+              end;
+            end;
+          end;
+         inc(ldfile.Adjust.SrcOffset[i-1],4);
+         if(ldfile.Adjust.SrcIndex[i-1]=ldfile.EntryIndex) and
+         (ldfile.Adjust.SrcOffset[i-1]+4<=ldfile.EntryOffset) then
+          begin
+           inc(ldfile.EntryOffset,4);
+          end;
+        end
+       else if(tempresult>=$10FF) and (tempresult<$1000*$1000+$FF) then
+        begin
+         inc(tempfinal.SecSize[tempindex-1],8);
+         tydq_reallocMem(tempfinal.SecContent[tempindex-1],tempfinal.SecSize[tempindex-1]);
+         changeptr:=tempfinal.SecContent[tempindex-1]+ldfile.Adjust.SrcOffset[i-1];
+         tydq_move_inverse(Pbyte(changeptr)^,Pbyte(changeptr+8)^,
+         tempfinal.SecSize[tempindex-1]-ldfile.Adjust.Srcoffset[i-1]-8);
+         if(tempresult>0) then
+          begin
+           Pdword(changeptr)^:=
+           ld_aarch64_stub_add(Pdword(changeptr)^ and $1F,(Abs(tempresult-$FF) shr 12) and $FFF,false,ldbit=2);
+           Pdword(changeptr+4)^:=
+           ld_aarch64_stub_add(Pdword(changeptr)^ and $1F,Abs(tempresult-$FF) and $FFF,false,ldbit=2);
+          end
+         else
+          begin
+           Pdword(changeptr)^:=
+           ld_aarch64_stub_sub(Pdword(changeptr)^ and $1F,(Abs(tempresult-$FF) shr 12) and $FFF,false,ldbit=2);
+           Pdword(changeptr+4)^:=
+           ld_aarch64_stub_sub(Pdword(changeptr)^ and $1F,Abs(tempresult-$FF) and $FFF,false,ldbit=2);
+          end;
+         m:=1; tempindex3:=0; tempindex4:=0;
+         while(m<=tempfinal.SecCount-1) do
+          begin
+           n:=1;
+           while(n<=tempfinal.SecCount)do
+            begin
+             if(tempfinal.SecIndex[n-1]=m) then break;
+             inc(n);
+            end;
+           if(n<=tempfinal.SecCount) then tempindex3:=n else tempindex3:=0;
+           if(tempindex3=0) then break;
+           n:=1;
+           while(n<=tempfinal.SecCount)do
+            begin
+             if(tempfinal.SecIndex[n-1]=m+1) then break;
+             inc(n);
+            end;
+           if(n<=tempfinal.SecCount) then tempindex4:=n else tempindex4:=0;
+           if(tempindex4=0) then break;
+           if(tempfinal.SecAddress[tempindex3-1]+tempfinal.SecSize[tempindex3-1]<=
+             tempfinal.SecAddress[tempindex4-1]) then
+              begin
+               if(tempfinal.SecName[tempindex4-1]='.text')
+               or(tempfinal.SecName[tempindex4-1]='.rodata')
+               or(tempfinal.SecName[tempindex4-1]='.data') then
+                begin
+                 if(ld_align(tempfinal.SecAddress[tempindex4-1],align)-
+                 (tempfinal.SecAddress[tempindex3-1]+tempfinal.SecSize[tempindex3-1])>=align) then
+                  begin
+                   ld_calculate_behind(DynQwordArray(tempfinal.SecAddress),
+                   DynWordArray(tempfinal.SecIndex),
+                   tempfinal.SecIndex[tempindex4-1],-align);
+                  end;
+                end
+               else if(tempfinal.SecName[tempindex3-1]<>'.bss') and
+               (tempfinal.SecName[tempindex3-1]<>'.tbss') then
+                begin
+                 if(tempfinal.SecAddress[tempindex4-1]-
+                 (tempfinal.SecAddress[tempindex3-1]+tempfinal.SecSize[tempindex3-1])>=ldbit shl 2) then
+                  begin
+                   ld_calculate_behind(DynQwordArray(tempfinal.SecAddress),
+                   DynWordArray(tempfinal.SecIndex),
+                   tempfinal.SecIndex[tempindex4-1],-ldbit shl 2);
+                  end;
+                end
+               else
+                begin
+                 if(tempfinal.SecAddress[tempindex4-1]-tempfinal.SecAddress[tempindex3-1]>=ldbit shl 2) then
+                  begin
+                   ld_calculate_behind(DynQwordArray(tempfinal.SecAddress),
+                   DynwordArray(tempfinal.SecIndex),
+                   tempfinal.SecIndex[tempindex4-1],-ldbit shl 2);
+                  end;
+                end;
+              end
+             else
+              begin
+               if(tempfinal.SecName[tempindex4-1]='.text')
+               or(tempfinal.SecName[tempindex4-1]='.rodata')
+               or(tempfinal.SecName[tempindex4-1]='.data') then
+                begin
+                 if(ld_align(tempfinal.SecAddress[tempindex4-1],align)-
+                 (tempfinal.SecAddress[tempindex3-1]+tempfinal.SecSize[tempindex3-1])<=0) then
+                  begin
+                   ld_calculate_behind(DynQwordArray(tempfinal.SecAddress),
+                   DynWordArray(tempfinal.SecIndex),
+                   tempfinal.SecIndex[tempindex4-1],align);
+                  end;
+                end
+               else if(tempfinal.SecName[tempindex3-1]<>'.bss') and
+               (tempfinal.SecName[tempindex3-1]<>'.tbss') then
+                begin
+                 if(tempfinal.SecAddress[tempindex4-1]-
+                 (tempfinal.SecAddress[tempindex3-1]+tempfinal.SecSize[tempindex3-1])<=0) then
+                  begin
+                   ld_calculate_behind(DynQwordArray(tempfinal.SecAddress),
+                   DynWordArray(tempfinal.SecIndex),
+                   tempfinal.SecIndex[tempindex4-1],ldbit shl 2);
+                  end;
+                end
+               else
+                begin
+                 if(tempfinal.SecAddress[tempindex4-1]-
+                 (tempfinal.SecAddress[tempindex3-1]+tempfinal.SecSize[tempindex3-1])<0) then
+                  begin
+                   ld_calculate_behind(DynQwordArray(tempfinal.SecAddress),
+                   DynWordArray(tempfinal.SecIndex),
+                   tempfinal.SecIndex[tempindex4-1],ldbit shl 2);
+                  end;
+                end;
+              end;
+           inc(m);
+          end;
+         for m:=1 to ldfile.Adjust.Count do
+          begin
+           if(ldfile.Adjust.AdjustType[m-1]=0) then continue;
+           if(ldfile.Adjust.SrcIndex[i-1]=ldfile.Adjust.SrcIndex[m-1]) then
+            begin
+             if(ldfile.Adjust.SrcOffset[i-1]<=ldfile.Adjust.SrcOffset[m-1]) then
+              begin
+               inc(ldfile.Adjust.SrcOffset[m-1],8);
+              end;
+            end;
+           if(ldfile.Adjust.SrcIndex[i-1]=ldfile.Adjust.DestIndex[m-1]) then
+            begin
+             if(ldfile.Adjust.SrcOffset[i-1]<=ldfile.Adjust.DestOffset[m-1]) then
+              begin
+               inc(ldfile.Adjust.DestOffset[m-1],8);
+              end;
+            end;
+          end;
+         for m:=1 to ldfile.SymTable.SymbolCount do
+          begin
+           if(ldfile.Adjust.AdjustType[m-1]=0) then continue;
+           if(ldfile.Adjust.SrcIndex[i-1]=ldfile.SymTable.SymbolIndex[m-1]) then
+            begin
+             if(ldfile.Adjust.SrcOffset[i-1]<=ldfile.SymTable.SymbolValue[m-1]) then
+              begin
+               inc(ldfile.SymTable.SymbolSize[m-1],8);
+              end;
+            end;
+          end;
+         inc(ldfile.Adjust.SrcOffset[i-1],8);
+         if(ldfile.Adjust.SrcIndex[i-1]=ldfile.EntryIndex) and
+         (ldfile.Adjust.SrcOffset[i-1]+8<=ldfile.EntryOffset) then
+          begin
+           inc(ldfile.EntryOffset,8);
+          end;
+        end;
+      end;
+    end;
+  end;
+ {For Riscv Only}
+ writepos[1]:=3; writepos[2]:=3;
+ if(ldarch=elf_machine_riscv) then
+  begin
+   for k:=1 to ldfile.Adjust.Count do
+    begin
+     i:=1;
+     while(i<=ldfile.Adjust.Count)do
+      begin
+       if(AdjustOrder[i-1]+1=k) then break;
+       inc(i);
+      end;
+     if(i>ldfile.Adjust.Count) then continue;
+     index:=ldfile.Adjust.SrcIndex[i-1];
+     if(ldfile.SecName[index-1]='.debug_frame') and (debugframe=false) then continue;
+     j:=1;
+     while(j<=tempfinal.SecCount)do
+      begin
+       if(ldfile.SecName[index-1]=tempfinal.SecName[j-1]) then break;
+       inc(j);
+      end;
+     if(j>tempfinal.SecCount) then continue;
+     startoffset:=tempfinal.SecAddress[j-1]+ldfile.Adjust.SrcOffset[i-1];
+     changeptr:=tempfinal.SecContent[j-1]+ldfile.Adjust.Srcoffset[i-1];
+     tempindex:=j;
+     index:=ldfile.Adjust.DestIndex[i-1];
+     if(index>0) then
+      begin
+       if(ldfile.SecName[index-1]='.debug_frame') and (debugframe=false) then continue;
+       j:=1;
+       while(j<=tempfinal.SecCount)do
+        begin
+         if(ldfile.SecName[index-1]=tempfinal.SecName[j-1]) then break;
+         inc(j);
+        end;
+       if(j>tempfinal.SecCount) then continue;
+      end;
+     tempindex2:=j;
+     if(ld_formula_check_got(ldfile.Adjust.Formula[i-1])) then
+      begin
+       j:=1; writepos[1]:=0; writepos[2]:=0;
+       while(j<=length(tempfinal.GotSymbol))do
+        begin
+         if(ldfile.Adjust.DestName[i-1]=tempfinal.GotSymbol[j-1]) then
+          begin
+           writepos[1]:=2+j; break;
+          end;
+         inc(j);
+        end;
+       if(j>length(tempfinal.GotSymbol)) then offset1:=j else offset1:=0;
+       j:=1;
+       while(j<=length(tempfinal.GotPltSymbol))do
+        begin
+         if(ldfile.Adjust.DestName[i-1]=tempfinal.GotPltSymbol[j-1]) then
+          begin
+           writepos[2]:=2+j; break;
+          end;
+         inc(j);
+        end;
+       if(j>length(tempfinal.GotPltSymbol)) then offset2:=length(tempfinal.GotSymbol)+j else offset2:=0;
+      end;
+     endoffset:=tempfinal.SecAddress[j-1]+ldfile.Adjust.DestOffset[i-1];
+     {Rehandle the Adjustment Table For RISC-V}
+     isexternal:=false;
+     if(isgotbase) or (isgotoffset) then
+      begin
+       j:=1; writepos[1]:=0; writepos[2]:=0;
+       while(j<=length(tempfinal.GotSymbol))do
+        begin
+         if(ldfile.Adjust.DestName[i-1]=tempfinal.GotSymbol[j-1]) then
+          begin
+           writepos[1]:=2+j; break;
+          end;
+         inc(j);
+        end;
+       if(j<=length(tempfinal.GotSymbol)) then offset1:=j else offset1:=0;
+       j:=1;
+       while(j<=length(tempfinal.GotPltSymbol))do
+        begin
+         if(ldfile.Adjust.DestName[i-1]=tempfinal.GotPltSymbol[j-1]) then
+          begin
+           writepos[2]:=2+j; isexternal:=true; break;
+          end;
+         inc(j);
+        end;
+       if(j<=length(tempfinal.GotPltSymbol)) then offset2:=length(tempfinal.GotSymbol)+j else offset2:=0;
+      end;
+     if(ldfile.Adjust.Formula[i-1].mask=elf_riscv_u_i_type)then
+      begin
+       tempnum3:=0; tempnum4:=1;
+       if(ld_formula_check_got(ldfile.Adjust.Formula[i-1])) then
+        begin
+         if(isexternal) then
+         tempresult:=(tempfinal.SecAddress[gotpltindex-1]
+         +writepos[2]*ldbit shl 2+ldfile.Adjust.Addend[i-1]-startoffset)
+         else
+         tempresult:=(tempfinal.SecAddress[gotindex-1]
+         +writepos[1]*ldbit shl 2+ldfile.Adjust.Addend[i-1]-startoffset);
+        end
+       else
+        begin
+         tempresult:=(endoffset+ldfile.Adjust.Addend[i-1]-startoffset);
+        end;
+       if((tempresult and $FFF=0) or (tempresult shr 12=0)) and
+       (ld_riscv_check_ld(Pdword(changeptr+4)^)=false) then
+        begin
+         if(tempresult and $FFF=0) and (tempresult shr 12=0) then
+          begin
+           changeptr:=tempfinal.SecContent[tempindex-1]+ldfile.Adjust.Srcoffset[i-1];
+           tydq_move(Pbyte(changeptr+8)^,Pbyte(changeptr)^,
+           tempfinal.SecSize[tempindex-1]-ldfile.Adjust.Srcoffset[i-1]-8);
+           dec(tempfinal.SecSize[tempindex-1],8); movesecoffset:=8; movesecoffset2:=0;
+           ldfile.Adjust.AdjustType[i-1]:=0;
+          end
+         else if(tempresult and $FFF=0) then
+          begin
+           changeptr:=tempfinal.SecContent[tempindex-1]+ldfile.Adjust.Srcoffset[i-1];
+           tydq_move(Pbyte(changeptr+8)^,Pbyte(changeptr+4)^,
+           tempfinal.SecSize[tempindex-1]-ldfile.Adjust.Srcoffset[i-1]-8);
+           dec(tempfinal.SecSize[tempindex-1],4); movesecoffset:=4; movesecoffset2:=4;
+           ldfile.Adjust.Formula[i-1].mask:=elf_riscv_u_type;
+          end
+         else if(tempresult shr 12=0) then
+          begin
+           changeptr:=tempfinal.SecContent[tempindex-1]+ldfile.Adjust.Srcoffset[i-1];
+           tydq_move(Pbyte(changeptr+4)^,Pbyte(changeptr)^,
+           tempfinal.SecSize[tempindex-1]-ldfile.Adjust.Srcoffset[i-1]-4);
+           dec(tempfinal.SecSize[tempindex-1],4); movesecoffset:=4; movesecoffset2:=0;
+           ldfile.Adjust.Formula[i-1].mask:=elf_riscv_i_type;
+          end;
+         tydq_reallocMem(tempfinal.SecContent[tempindex-1],tempfinal.SecSize[tempindex-1]);
+         m:=1; tempindex3:=0; tempindex4:=0;
+         while(m<=tempfinal.SecCount-1) do
+          begin
+           n:=1;
+           while(n<=tempfinal.SecCount)do
+            begin
+             if(tempfinal.SecIndex[n-1]=m) then break;
+             inc(n);
+            end;
+           if(n<=tempfinal.SecCount) then tempindex3:=n else tempindex3:=0;
+           if(tempindex3=0) then break;
+           n:=1;
+           while(n<=tempfinal.SecCount)do
+            begin
+             if(tempfinal.SecIndex[n-1]=m+1) then break;
+             inc(n);
+            end;
+           if(n<=tempfinal.SecCount) then tempindex4:=n else tempindex4:=0;
+           if(tempindex4=0) then break;
+           if(tempfinal.SecAddress[tempindex3-1]+tempfinal.SecSize[tempindex3-1]<=
+             tempfinal.SecAddress[tempindex4-1]) then
+              begin
+               if(tempfinal.SecName[tempindex4-1]='.text')
+               or(tempfinal.SecName[tempindex4-1]='.rodata')
+               or(tempfinal.SecName[tempindex4-1]='.data') then
+                begin
+                 if(ld_align(tempfinal.SecAddress[tempindex4-1],align)-
+                 (tempfinal.SecAddress[tempindex3-1]+tempfinal.SecSize[tempindex3-1])>=align) then
+                  begin
+                   ld_calculate_behind(DynQwordArray(tempfinal.SecAddress),
+                   DynWordArray(tempfinal.SecIndex),
+                   tempfinal.SecIndex[tempindex4-1],-align);
+                  end;
+                end
+               else if(tempfinal.SecName[tempindex3-1]<>'.bss') and
+               (tempfinal.SecName[tempindex3-1]<>'.tbss') then
+                begin
+                 if(tempfinal.SecAddress[tempindex4-1]-
+                 (tempfinal.SecAddress[tempindex3-1]+tempfinal.SecSize[tempindex3-1])>=ldbit shl 2) then
+                  begin
+                   ld_calculate_behind(DynQwordArray(tempfinal.SecAddress),
+                   DynWordArray(tempfinal.SecIndex),
+                   tempfinal.SecIndex[tempindex4-1],-ldbit shl 2);
+                  end;
+                end
+               else
+                begin
+                 if(tempfinal.SecAddress[tempindex4-1]-tempfinal.SecAddress[tempindex3-1]>=ldbit shl 2) then
+                  begin
+                   ld_calculate_behind(DynQwordArray(tempfinal.SecAddress),
+                   DynwordArray(tempfinal.SecIndex),
+                   tempfinal.SecIndex[tempindex4-1],-ldbit shl 2);
+                  end;
+                end;
+              end
+             else
+              begin
+               if(tempfinal.SecName[tempindex4-1]='.text')
+               or(tempfinal.SecName[tempindex4-1]='.rodata')
+               or(tempfinal.SecName[tempindex4-1]='.data') then
+                begin
+                 if(ld_align(tempfinal.SecAddress[tempindex4-1],align)-
+                 (tempfinal.SecAddress[tempindex3-1]+tempfinal.SecSize[tempindex3-1])<=0) then
+                  begin
+                   ld_calculate_behind(DynQwordArray(tempfinal.SecAddress),
+                   DynWordArray(tempfinal.SecIndex),
+                   tempfinal.SecIndex[tempindex4-1],align);
+                  end;
+                end
+               else if(tempfinal.SecName[tempindex3-1]<>'.bss') and
+               (tempfinal.SecName[tempindex3-1]<>'.tbss') then
+                begin
+                 if(tempfinal.SecAddress[tempindex4-1]-
+                 (tempfinal.SecAddress[tempindex3-1]+tempfinal.SecSize[tempindex3-1])<=0) then
+                  begin
+                   ld_calculate_behind(DynQwordArray(tempfinal.SecAddress),
+                   DynWordArray(tempfinal.SecIndex),
+                   tempfinal.SecIndex[tempindex4-1],ldbit shl 2);
+                  end;
+                end
+               else
+                begin
+                 if(tempfinal.SecAddress[tempindex4-1]-
+                 (tempfinal.SecAddress[tempindex3-1]+tempfinal.SecSize[tempindex3-1])<0) then
+                  begin
+                   ld_calculate_behind(DynQwordArray(tempfinal.SecAddress),
+                   DynWordArray(tempfinal.SecIndex),
+                   tempfinal.SecIndex[tempindex4-1],ldbit shl 2);
+                  end;
+                end;
+              end;
+           inc(m);
+          end;
+         for m:=1 to ldfile.Adjust.Count do
+          begin
+           if(ldfile.Adjust.AdjustType[m-1]=0) then continue;
+           if(ldfile.Adjust.SrcIndex[i-1]=ldfile.Adjust.SrcIndex[m-1]) then
+            begin
+             if(ldfile.Adjust.SrcOffset[i-1]+movesecoffset2<=ldfile.Adjust.SrcOffset[m-1]) then
+              begin
+               dec(ldfile.Adjust.SrcOffset[m-1],movesecoffset);
+              end;
+            end;
+           if(ldfile.Adjust.SrcIndex[i-1]=ldfile.Adjust.DestIndex[m-1]) then
+            begin
+             if(ldfile.Adjust.SrcOffset[i-1]+movesecoffset2<=ldfile.Adjust.DestOffset[m-1]) then
+              begin
+               dec(ldfile.Adjust.DestOffset[m-1],movesecoffset);
+              end;
+            end;
+          end;
+         for m:=1 to ldfile.SymTable.SymbolCount do
+          begin
+           if(ldfile.Adjust.AdjustType[m-1]=0) then continue;
+           if(ldfile.Adjust.SrcIndex[i-1]=ldfile.SymTable.SymbolIndex[m-1]) then
+            begin
+             if(ldfile.Adjust.SrcOffset[i-1]+movesecoffset2<=ldfile.SymTable.SymbolValue[m-1]) then
+              begin
+               dec(ldfile.SymTable.SymbolValue[m-1],movesecoffset);
+              end
+             else if(ldfile.Adjust.SrcOffset[i-1]=ldfile.SymTable.SymbolValue[m-1]) then
+              begin
+               dec(ldfile.SymTable.SymbolSize[m-1],movesecoffset);
+              end;
+            end;
+          end;
+         if(ldfile.Adjust.SrcIndex[i-1]=ldfile.EntryIndex) and
+         (ldfile.Adjust.SrcOffset[i-1]+movesecoffset<=ldfile.EntryOffset) then
+          begin
+           dec(ldfile.EntryOffset,movesecoffset);
+          end;
+        end;
+      end
+     else if(ldfile.Adjust.Formula[i-1].mask=elf_riscv_u_type) then
+      begin
+       if(ld_formula_check_got(ldfile.Adjust.Formula[i-1])) then
+        begin
+         if(isexternal) then
+         tempresult:=(tempfinal.SecAddress[gotpltindex-1]
+         +writepos[2]*ldbit shl 2+ldfile.Adjust.Addend[i-1]-startoffset)
+         else
+         tempresult:=(tempfinal.SecAddress[gotindex-1]
+         +writepos[1]*ldbit shl 2+ldfile.Adjust.Addend[i-1]-startoffset);
+        end
+       else
+        begin
+         tempresult:=(endoffset+ldfile.Adjust.Addend[i-1]-startoffset);
+        end;
+       movesecoffset:=0;
+       if(ld_riscv_check_ld(Pdword(changeptr+4)^)) and
+       (i<ldfile.Adjust.Count) and (ldfile.Adjust.SrcOffset[i]-ldfile.Adjust.SrcOffset[i-1]=4)
+       and(ldfile.Adjust.Formula[i].mask=elf_riscv_i_type) then
+        begin
+         tempresult:=0; ldfile.Adjust.Formula[i-1].mask:=elf_riscv_u_i_type;
+         ldfile.Adjust.AdjustType[i]:=0;
+        end
+       else if(ld_riscv_check_jalr(Pdword(changeptr+4)^)) and
+       (i<ldfile.Adjust.Count) and (ldfile.Adjust.SrcOffset[i]-ldfile.Adjust.SrcOffset[i-1]=4)
+       and(ldfile.Adjust.Formula[i].mask=elf_riscv_i_type) then
+        begin
+         tempresult:=0; ldfile.Adjust.Formula[i-1].mask:=elf_riscv_u_i_type;
+         ldfile.Adjust.AdjustType[i]:=0;
+        end;
+       if(tempresult shr 12=0) and (tempresult and $FFF=0)
+       and (ld_riscv_check_ld(Pdword(changeptr+4)^)=false) then
+        begin
+         ldfile.Adjust.AdjustType[i-1]:=0;
+         changeptr:=tempfinal.SecContent[tempindex-1]+ldfile.Adjust.Srcoffset[i-1];
+         tydq_move(Pbyte(changeptr+4)^,Pbyte(changeptr)^,
+         tempfinal.SecSize[tempindex-1]-ldfile.Adjust.Srcoffset[i-1]-4);
+         dec(tempfinal.SecSize[tempindex-1],4); movesecoffset:=4;
+         tydq_reallocMem(tempfinal.SecContent[tempindex-1],tempfinal.SecSize[tempindex-1]);
+         m:=1; tempindex3:=0; tempindex4:=0;
+         while(m<=tempfinal.SecCount-1) do
+          begin
+           n:=1;
+           while(n<=tempfinal.SecCount)do
+            begin
+             if(tempfinal.SecIndex[n-1]=m) then break;
+             inc(n);
+            end;
+           if(n<=tempfinal.SecCount) then tempindex3:=n else tempindex3:=0;
+           if(tempindex3=0) then break;
+           n:=1;
+           while(n<=tempfinal.SecCount)do
+            begin
+             if(tempfinal.SecIndex[n-1]=m+1) then break;
+             inc(n);
+            end;
+           if(n<=tempfinal.SecCount) then tempindex4:=n else tempindex4:=0;
+           if(tempindex4=0) then break;
+           if(tempfinal.SecAddress[tempindex3-1]+tempfinal.SecSize[tempindex3-1]<=
+           tempfinal.SecAddress[tempindex4-1]) then
+              begin
+               if(tempfinal.SecName[tempindex4-1]='.text')
+               or(tempfinal.SecName[tempindex4-1]='.rodata')
+               or(tempfinal.SecName[tempindex4-1]='.data') then
+                begin
+                 if(ld_align(tempfinal.SecAddress[tempindex4-1],align)-
+                 (tempfinal.SecAddress[tempindex3-1]+tempfinal.SecSize[tempindex3-1])>=align) then
+                  begin
+                   ld_calculate_behind(DynQwordArray(tempfinal.SecAddress),
+                   DynWordArray(tempfinal.SecIndex),
+                   tempfinal.SecIndex[tempindex4-1],-align);
+                  end;
+                end
+               else if(tempfinal.SecName[tempindex3-1]<>'.bss') and
+               (tempfinal.SecName[tempindex3-1]<>'.tbss') then
+                begin
+                 if(tempfinal.SecAddress[tempindex4-1]-
+                 (tempfinal.SecAddress[tempindex3-1]+tempfinal.SecSize[tempindex3-1])>=ldbit shl 2) then
+                  begin
+                   ld_calculate_behind(DynQwordArray(tempfinal.SecAddress),
+                   DynWordArray(tempfinal.SecIndex),
+                   tempfinal.SecIndex[tempindex4-1],-ldbit shl 2);
+                  end;
+                end
+               else
+                begin
+                 if(tempfinal.SecAddress[tempindex4-1]-tempfinal.SecAddress[tempindex3-1]>=ldbit shl 2) then
+                  begin
+                   ld_calculate_behind(DynQwordArray(tempfinal.SecAddress),
+                   DynwordArray(tempfinal.SecIndex),
+                   tempfinal.SecIndex[tempindex4-1],-ldbit shl 2);
+                  end;
+                end;
+              end
+             else
+              begin
+               if(tempfinal.SecName[tempindex4-1]='.text')
+               or(tempfinal.SecName[tempindex4-1]='.rodata')
+               or(tempfinal.SecName[tempindex4-1]='.data') then
+                begin
+                 if(ld_align(tempfinal.SecAddress[tempindex4-1],align)-
+                 (tempfinal.SecAddress[tempindex3-1]+tempfinal.SecSize[tempindex3-1])<=0) then
+                  begin
+                   ld_calculate_behind(DynQwordArray(tempfinal.SecAddress),
+                   DynWordArray(tempfinal.SecIndex),
+                   tempfinal.SecIndex[tempindex4-1],align);
+                  end;
+                end
+               else if(tempfinal.SecName[tempindex3-1]<>'.bss') and
+               (tempfinal.SecName[tempindex3-1]<>'.tbss') then
+                begin
+                 if(tempfinal.SecAddress[tempindex4-1]-
+                 (tempfinal.SecAddress[tempindex3-1]+tempfinal.SecSize[tempindex3-1])<=0) then
+                  begin
+                   ld_calculate_behind(DynQwordArray(tempfinal.SecAddress),
+                   DynWordArray(tempfinal.SecIndex),
+                   tempfinal.SecIndex[tempindex4-1],ldbit shl 2);
+                  end;
+                end
+               else
+                begin
+                 if(tempfinal.SecAddress[tempindex4-1]-
+                 (tempfinal.SecAddress[tempindex3-1]+tempfinal.SecSize[tempindex3-1])<0) then
+                  begin
+                   ld_calculate_behind(DynQwordArray(tempfinal.SecAddress),
+                   DynWordArray(tempfinal.SecIndex),
+                   tempfinal.SecIndex[tempindex4-1],ldbit shl 2);
+                  end;
+                end;
+              end;
+           inc(m);
+          end;
+         for m:=1 to ldfile.Adjust.Count do
+          begin
+           if(ldfile.Adjust.AdjustType[m-1]=0) then continue;
+           if(ldfile.Adjust.SrcIndex[i-1]=ldfile.Adjust.SrcIndex[m-1]) then
+            begin
+             if(ldfile.Adjust.SrcOffset[i-1]<=ldfile.Adjust.SrcOffset[m-1]) then
+              begin
+               dec(ldfile.Adjust.SrcOffset[m-1],movesecoffset);
+              end;
+            end;
+           if(ldfile.Adjust.SrcIndex[i-1]=ldfile.Adjust.DestIndex[m-1]) then
+            begin
+             if(ldfile.Adjust.SrcOffset[i-1]<=ldfile.Adjust.DestOffset[m-1]) then
+              begin
+               dec(ldfile.Adjust.DestOffset[m-1],movesecoffset);
+              end;
+            end;
+          end;
+         for m:=1 to ldfile.SymTable.SymbolCount do
+          begin
+           if(ldfile.Adjust.AdjustType[m-1]=0) then continue;
+           if(ldfile.Adjust.SrcIndex[i-1]=ldfile.SymTable.SymbolIndex[m-1]) then
+            begin
+             if(ldfile.Adjust.SrcOffset[i-1]<=ldfile.SymTable.SymbolValue[m-1]) then
+              begin
+               dec(ldfile.SymTable.SymbolValue[m-1],movesecoffset);
+              end
+             else if(ldfile.Adjust.SrcOffset[i-1]=ldfile.SymTable.SymbolValue[m-1]) then
+              begin
+               dec(ldfile.SymTable.SymbolSize[m-1],movesecoffset);
+              end;
+            end;
+          end;
+         ldfile.Adjust.Formula[i-1].mask:=elf_riscv_i_type;
+         if(ldfile.Adjust.SrcIndex[i-1]=ldfile.EntryIndex) and
+         (ldfile.Adjust.SrcOffset[i-1]<=ldfile.EntryOffset) then
+          begin
+           dec(ldfile.EntryOffset,movesecoffset);
+          end
+        end
+       else if(tempresult and $FFF<>0) then
+        begin
+         if(Abs(tempresult and $FFF)>2047) and (tempresult>=0) then
+          begin
+           tempresult:=tempresult+$1000;
+           movesecoffset:=4;
+           inc(tempfinal.SecSize[tempindex-1],4);
+           tydq_reallocMem(tempfinal.SecContent[tempindex-1],tempfinal.SecSize[tempindex-1]);
+           changeptr:=tempfinal.SecContent[tempindex-1]+ldfile.Adjust.SrcOffset[i-1];
+           tydq_move_inverse(Pbyte(changeptr+4)^,Pbyte(changeptr+8)^,
+           tempfinal.SecSize[tempindex-1]-ldfile.Adjust.Srcoffset[i-1]-8);
+           Pdword(changeptr+4)^:=ld_riscv_stub_addi(
+           Pld_riscv_u_type(changeptr)^.DestinationRegister,
+           Pld_riscv_u_type(changeptr)^.DestinationRegister,-($1000-tempresult and $FFF));
+          end
+         else if(Abs(tempresult and $FFF)>2047) and (tempresult<0) then
+          begin
+           tempresult:=tempresult-$1000;
+           movesecoffset:=4;
+           inc(tempfinal.SecSize[tempindex-1],4);
+           tydq_reallocMem(tempfinal.SecContent[tempindex-1],tempfinal.SecSize[tempindex-1]);
+           changeptr:=tempfinal.SecContent[tempindex-1]+ldfile.Adjust.SrcOffset[i-1];
+           tydq_move_inverse(Pbyte(changeptr+4)^,Pbyte(changeptr+8)^,
+           tempfinal.SecSize[tempindex-1]-ldfile.Adjust.Srcoffset[i-1]-8);
+           Pdword(changeptr+4)^:=ld_riscv_stub_addi(
+           Pld_riscv_u_type(changeptr)^.DestinationRegister,
+           Pld_riscv_u_type(changeptr)^.DestinationRegister,($1000-tempresult and $FFF));
+          end
+         else
+          begin
+           movesecoffset:=4;
+           inc(tempfinal.SecSize[tempindex-1],4);
+           tydq_reallocMem(tempfinal.SecContent[tempindex-1],tempfinal.SecSize[tempindex-1]);
+           changeptr:=tempfinal.SecContent[tempindex-1]+ldfile.Adjust.SrcOffset[i-1];
+           tydq_move_inverse(Pbyte(changeptr+4)^,Pbyte(changeptr+8)^,
+           tempfinal.SecSize[tempindex-1]-ldfile.Adjust.Srcoffset[i-1]-12);
+           if(tempresult>0) then
+            begin
+             Pdword(changeptr+4)^:=ld_riscv_stub_addi(
+             Pld_riscv_u_type(changeptr)^.DestinationRegister,
+             Pld_riscv_u_type(changeptr)^.DestinationRegister,tempresult and $FFF);
+            end
+           else
+            begin
+             Pdword(changeptr+4)^:=ld_riscv_stub_addi(
+             Pld_riscv_u_type(changeptr)^.DestinationRegister,
+             Pld_riscv_u_type(changeptr)^.DestinationRegister,-(tempresult and $FFF));
+            end;
+          end;
+         m:=1; tempindex3:=0; tempindex4:=0;
+         while(m<=tempfinal.SecCount-1) do
+          begin
+           n:=1;
+           while(n<=tempfinal.SecCount)do
+            begin
+             if(tempfinal.SecIndex[n-1]=m) then break;
+             inc(n);
+            end;
+           if(n<=tempfinal.SecCount) then tempindex3:=n else tempindex3:=0;
+           if(tempindex3=0) then break;
+           n:=1;
+           while(n<=tempfinal.SecCount)do
+            begin
+             if(tempfinal.SecIndex[n-1]=m+1) then break;
+             inc(n);
+            end;
+           if(n<=tempfinal.SecCount) then tempindex4:=n else tempindex4:=0;
+           if(tempindex4=0) then break;
+           if(tempfinal.SecAddress[tempindex3-1]+tempfinal.SecSize[tempindex3-1]<=
+           tempfinal.SecAddress[tempindex4-1]) then
+            begin
+             if(tempfinal.SecName[tempindex4-1]='.text')
+             or(tempfinal.SecName[tempindex4-1]='.rodata')
+             or(tempfinal.SecName[tempindex4-1]='.data') then
+              begin
+               if(ld_align(tempfinal.SecAddress[tempindex4-1],align)-
+               (tempfinal.SecAddress[tempindex3-1]+tempfinal.SecSize[tempindex3-1])>=align) then
+                begin
+                 ld_calculate_behind(DynQwordArray(tempfinal.SecAddress),
+                 DynWordArray(tempfinal.SecIndex),
+                 tempfinal.SecIndex[tempindex4-1],-align);
+                end;
+              end
+             else if(tempfinal.SecName[tempindex3-1]<>'.bss') and
+             (tempfinal.SecName[tempindex3-1]<>'.tbss') then
+              begin
+               if(tempfinal.SecAddress[tempindex4-1]-
+               (tempfinal.SecAddress[tempindex3-1]+tempfinal.SecSize[tempindex3-1])>=ldbit shl 2) then
+                begin
+                 ld_calculate_behind(DynQwordArray(tempfinal.SecAddress),
+                 DynWordArray(tempfinal.SecIndex),
+                 tempfinal.SecIndex[tempindex4-1],-ldbit shl 2);
+                end;
+              end
+            else
+             begin
+              if(tempfinal.SecAddress[tempindex4-1]-tempfinal.SecAddress[tempindex3-1]>=ldbit shl 2) then
+               begin
+                ld_calculate_behind(DynQwordArray(tempfinal.SecAddress),
+                DynwordArray(tempfinal.SecIndex),
+                tempfinal.SecIndex[tempindex4-1],-ldbit shl 2);
+                end;
+              end;
+             end
+            else
+             begin
+              if(tempfinal.SecName[tempindex4-1]='.text')
+              or(tempfinal.SecName[tempindex4-1]='.rodata')
+              or(tempfinal.SecName[tempindex4-1]='.data') then
+               begin
+                if(ld_align(tempfinal.SecAddress[tempindex4-1],align)-
+                (tempfinal.SecAddress[tempindex3-1]+tempfinal.SecSize[tempindex3-1])<=0) then
+                 begin
+                  ld_calculate_behind(DynQwordArray(tempfinal.SecAddress),
+                  DynWordArray(tempfinal.SecIndex),
+                  tempfinal.SecIndex[tempindex4-1],align);
+                 end;
+               end
+              else if(tempfinal.SecName[tempindex3-1]<>'.bss') and
+              (tempfinal.SecName[tempindex3-1]<>'.tbss') then
+               begin
+                if(tempfinal.SecAddress[tempindex4-1]-
+                (tempfinal.SecAddress[tempindex3-1]+tempfinal.SecSize[tempindex3-1])<=0) then
+                 begin
+                  ld_calculate_behind(DynQwordArray(tempfinal.SecAddress),
+                  DynWordArray(tempfinal.SecIndex),
+                  tempfinal.SecIndex[tempindex4-1],ldbit shl 2);
+                 end;
+               end
+              else
+               begin
+                if(tempfinal.SecAddress[tempindex4-1]-
+                (tempfinal.SecAddress[tempindex3-1]+tempfinal.SecSize[tempindex3-1])<0) then
+                 begin
+                  ld_calculate_behind(DynQwordArray(tempfinal.SecAddress),
+                  DynWordArray(tempfinal.SecIndex),
+                  tempfinal.SecIndex[tempindex4-1],ldbit shl 2);
+                 end;
+               end;
+             end;
+           inc(m);
+          end;
+         for m:=1 to ldfile.Adjust.Count do
+          begin
+           if(ldfile.Adjust.AdjustType[m-1]=0) then continue;
+           if(ldfile.Adjust.SrcIndex[i-1]=ldfile.Adjust.SrcIndex[m-1]) then
+            begin
+             if(ldfile.Adjust.SrcOffset[i-1]+4<=ldfile.Adjust.SrcOffset[m-1]) then
+              begin
+               inc(ldfile.Adjust.SrcOffset[m-1],movesecoffset);
+              end;
+            end;
+           if(ldfile.Adjust.SrcIndex[i-1]=ldfile.Adjust.DestIndex[m-1]) then
+            begin
+             if(ldfile.Adjust.SrcOffset[i-1]+4<=ldfile.Adjust.DestOffset[m-1]) then
+              begin
+               inc(ldfile.Adjust.DestOffset[m-1],movesecoffset);
+              end;
+            end;
+          end;
+         for m:=1 to ldfile.SymTable.SymbolCount do
+          begin
+           if(ldfile.Adjust.AdjustType[m-1]=0) then continue;
+           if(ldfile.Adjust.SrcIndex[i-1]=ldfile.SymTable.SymbolIndex[m-1]) then
+            begin
+             if(ldfile.Adjust.SrcOffset[i-1]+4<=ldfile.SymTable.SymbolValue[m-1]) then
+              begin
+               inc(ldfile.SymTable.SymbolValue[m-1],movesecoffset);
+              end
+             else if(ldfile.Adjust.SrcOffset[i-1]=ldfile.SymTable.SymbolValue[m-1]) then
+              begin
+               inc(ldfile.SymTable.SymbolSize[m-1],movesecoffset);
+              end;
+            end;
+          end;
+         ldfile.Adjust.Formula[i-1].mask:=elf_riscv_u_i_type;
+         if(ldfile.Adjust.SrcIndex[i-1]=ldfile.EntryIndex) and
+         (ldfile.Adjust.SrcOffset[i-1]+4<=ldfile.EntryOffset) then
+          begin
+           inc(ldfile.EntryOffset,movesecoffset);
+          end;
+        end;
+      end;
+     m:=1;
+     while(m<=ldfile.Adjust.Count) do
+      begin
+       if(ldfile.Adjust.Formula[i-1].mask=elf_riscv_j_type) or
+       (ldfile.Adjust.Formula[i-1].mask=elf_riscv_b_type) or
+       (ldfile.Adjust.Formula[i-1].mask=elf_riscv_cb_type) or
+       (ldfile.Adjust.Formula[i-1].mask=elf_riscv_cj_type) or
+       ((ldfile.Adjust.Formula[i-1].mask=elf_riscv_i_type) and
+       (ld_riscv_check_jalr(Pdword(changeptr)^))) or
+       ((ldfile.Adjust.Formula[i-1].mask=elf_riscv_u_i_type) and
+       (ld_riscv_check_jalr(Pdword(changeptr+4)^))) then
+        begin
+         break;
+        end;
+       if(i=m) then
+        begin
+         inc(m); continue;
+        end;
+       if(ldfile.Adjust.DestIndex[i-1]=ldfile.Adjust.SrcIndex[m-1])
+       and(ldfile.Adjust.DestOffset[i-1]=ldfile.Adjust.SrcOffset[m-1])
+       and(ldfile.Adjust.DestOffset[i-1]<>ldfile.Adjust.DestOffset[m-1])
+       and(ldfile.Adjust.DestName[i-1]<>ldfile.Adjust.DestName[m-1])then
+        begin
+         ldfile.Adjust.DestIndex[i-1]:=ldfile.Adjust.DestIndex[m-1];
+         ldfile.Adjust.DestOffset[i-1]:=ldfile.Adjust.DestOffset[m-1];
+         ldfile.Adjust.DestName[i-1]:=ldfile.Adjust.DestName[m-1];
+         ldfile.Adjust.Addend[i-1]:=Natint(ldfile.Adjust.SrcOffset[i-1])-
+         Natint(ldfile.Adjust.SrcOffset[m-1]);
+         break;
+        end
+       else inc(m);
+      end;
+    end;
+  end;
+ {Relocate the got and got.plt table}
+ for i:=1 to tempfinal.SecCount do
+  begin
+   if(tempfinal.SecName[i-1]='.got') then tempfinal.GotAddr:=tempfinal.SecAddress[i-1];
+   if(tempfinal.SecName[i-1]='.got.plt') then tempfinal.GotPltAddr:=tempfinal.SecAddress[i-1];
+  end;
+ {Now Relocate the file with adjustment table}
+ SetLength(AdjustOrder,0);
+ SetLength(tempfinal.Rela.SymOffset,tempfinal.Rela.SymCount);
+ SetLength(tempfinal.Rela.SymAddend,tempfinal.Rela.SymCount);
+ SetLength(tempfinal.Rela.SymType,tempfinal.Rela.SymCount);
+ writepos[1]:=3; writepos[2]:=3; startoffset:=0; endoffset:=0;
+ movesecoffset:=0; index:=0; offset1:=0; offset2:=0;
+ for i:=1 to ldfile.Adjust.Count do
+  begin
+   if(ldfile.Adjust.AdjustType[i-1]=0) then continue;
+   index:=ldfile.Adjust.SrcIndex[i-1];
+   if(ldfile.SecName[index-1]='.debug_frame') and (debugframe=false) then continue;
+   j:=1;
+   while(j<=tempfinal.SecCount)do
+    begin
+     if(ldfile.SecName[index-1]=tempfinal.SecName[j-1]) then break;
+     inc(j);
+    end;
+   if(j>tempfinal.SecCount) then continue;
+   startoffset:=tempfinal.SecAddress[j-1]+ldfile.Adjust.SrcOffset[i-1];
+   changeptr:=tempfinal.SecContent[j-1]+ldfile.Adjust.Srcoffset[i-1];
+   tempindex:=j;
+   index:=ldfile.Adjust.DestIndex[i-1];
+   if(ldfile.SecName[index-1]='.debug_frame') and (debugframe=false) then continue;
+   j:=1;
+   while(j<=tempfinal.SecCount)do
+    begin
+     if(ldfile.SecName[index-1]=tempfinal.SecName[j-1]) then break;
+     inc(j);
+    end;
+   if(j>tempfinal.SecCount) then continue;
+   endoffset:=tempfinal.SecAddress[j-1]+ldfile.Adjust.DestOffset[i-1];
+   j:=1; isrelative:=false; isgotbase:=false; isgotoffset:=false;
+   tempformula:=ldfile.Adjust.Formula[i-1];
+   while(j<=ldfile.Adjust.Formula[i-1].item.count)do
+    begin
+     if(ldfile.Adjust.Formula[i-1].item.item[j-1]='G') then isgotoffset:=true;
+     if(ldfile.Adjust.Formula[i-1].item.item[j-1]='GOT')
+     or(ldfile.Adjust.Formula[i-1].item.item[j-1]='GP') then isgotbase:=true;
+     if(j<ldfile.Adjust.Formula[i-1].item.count) and (ldfile.Adjust.Formula[i-1].item.item[j-1]='G')
+     and (ldfile.Adjust.Formula[i-1].item.item[j]='(') then isgotbase:=true;
+     if(ldfile.Adjust.Formula[i-1].item.item[j-1]='P')
+     or(ldfile.Adjust.Formula[i-1].item.item[j-1]='PLT')
+     or(ldfile.Adjust.Formula[i-1].item.item[j-1]='PC')
+     or(ldfile.Adjust.Formula[i-1].item.item[j-1]='L') then isrelative:=true;
+     inc(j);
+    end;
+   isexternal:=false;
+   if(isgotbase) or (isgotoffset) then
+    begin
+     j:=1; writepos[1]:=0; writepos[2]:=0;
+     while(j<=length(tempfinal.GotSymbol))do
+      begin
+       if(ldfile.Adjust.DestName[i-1]=tempfinal.GotSymbol[j-1]) then
+        begin
+         writepos[1]:=2+j; break;
+        end;
+       inc(j);
+      end;
+     if(j<=length(tempfinal.GotSymbol)) then offset1:=j else offset1:=0;
+     j:=1;
+     while(j<=length(tempfinal.GotPltSymbol))do
+      begin
+       if(ldfile.Adjust.DestName[i-1]=tempfinal.GotPltSymbol[j-1]) then
+        begin
+         writepos[2]:=2+j; isexternal:=true; break;
+        end;
+       inc(j);
+      end;
+     if(j<=length(tempfinal.GotPltSymbol)) then offset2:=length(tempfinal.GotSymbol)+j else offset2:=0;
+    end;
+   if(ldarch=elf_machine_386) or (ldarch=elf_machine_x86_64) then
+    begin
+     if(isexternal) or (ldfile.Adjust.DestIndex[i-1]=0) then
+      begin
+       tempresult:=ld_calculate_formula(tempformula,
+       ['S='+IntToStr(endoffset),'A='+IntToStr(ldfile.Adjust.Addend[i-1]),'B=0',
+        'P='+IntToStr(startoffset),'L='+IntToStr(endoffset),
+        'GOT='+IntToStr(tempfinal.GotPltAddr),
+        'G='+IntToStr(writepos[2]*ldbit shl 2)]);
+      end
+     else
+      begin
+       tempresult:=ld_calculate_formula(tempformula,
+       ['S='+IntToStr(endoffset),'A='+IntToStr(ldfile.Adjust.Addend[i-1]),'B=0',
+        'P='+IntToStr(startoffset),'L='+IntToStr(endoffset),
+        'GOT='+IntToStr(tempfinal.GotAddr),
+        'G='+IntToStr(writepos[1]*ldbit shl 2)]);
+      end;
+     if(isrelative=false) or ((isgotbase) or (isgotoffset)) or (ldfile.Adjust.DestIndex[i-1]=0) then
+      begin
+       if(isexternal) or (ldfile.Adjust.DestIndex[i-1]=0) then
+        begin
+         SetLength(tempfinal.Rela.SymOffset,tempfinal.Rela.SymCount);
+         tempfinal.Rela.SymOffset[offset2-1]:=tempfinal.GotPltAddr+writepos[2]*ldbit shl 2;
+         tempfinal.GotPltTable[writepos[2]]:=0;
+         tempfinal.Rela.SymAddend[offset2-1]:=0;
+         tempfinal.Rela.SymType[offset2-1]:=1;
+         k:=1;
+         while(k<=tempfinal.DynSym.SymbolCount)do
+          begin
+           if(tempfinal.DynSym.SymbolName[k-1]=ldfile.Adjust.AdjustName[i-1]) then break;
+           inc(k);
+          end;
+         if(k<=tempfinal.DynSym.SymbolCount) and (ldarch=elf_machine_386) then
+          begin
+           tempfinal.Rela.SymType[offset2-1]:=k shl 8+tempfinal.Rela.SymType[offset2-1];
+          end
+         else if(k<=tempfinal.DynSym.SymbolCount) and (ldarch=elf_machine_x86_64) then
+          begin
+           tempfinal.Rela.SymType[offset2-1]:=k shl 32+tempfinal.Rela.SymType[offset2-1];
+          end;
+        end
+       else
+        begin
+         SetLength(tempfinal.Rela.SymOffset,tempfinal.Rela.SymCount);
+         tempfinal.Rela.SymOffset[offset1-1]:=tempfinal.GotAddr+writepos[1]*ldbit shl 2;
+         tempfinal.GotTable[writepos[1]]:=endoffset+ldfile.Adjust.Addend[i-1];
+         tempfinal.Rela.SymAddend[offset1-1]:=endoffset+ldfile.Adjust.Addend[i-1];
+         tempfinal.Rela.SymType[offset1-1]:=8;
+        end;
+      end;
+     if(Natuint(changeptr)=ldfile.Adjust.Srcoffset[i-1]) then continue;
+     if(ldfile.Adjust.Formula[i-1].bit=8) then
+      begin
+       Pshortint(changeptr)^:=shortint(tempresult and $FF);
+      end
+     else if(ldfile.Adjust.Formula[i-1].bit=16) then
+      begin
+       Psmallint(changeptr)^:=smallint(tempresult and $FFFF);
+      end
+     else if(ldfile.Adjust.Formula[i-1].bit=32) then
+      begin
+       if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_x86_64_got_pc_rel) then
+        begin
+         case Pbyte(changeptr-1)^ of
+         $15:Pword(changeptr-2)^:=$E840;
+         $25:Pword(changeptr-2)^:=$E940;
+         end;
+        end
+       else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_x86_64_rex_got_pc_rel) then
+        begin
+         Pbyte(changeptr-2)^:=$8D;
+        end;
+       PInteger(changeptr)^:=Integer(tempresult and $FFFFFFFF);
+      end
+     else if(ldfile.Adjust.Formula[i-1].bit=64) then
+      begin
+       PInt64(changeptr)^:=tempresult;
+      end;
+    end
+   else if(ldarch=elf_machine_arm) then
+    begin
+     if(isexternal) or (ldfile.Adjust.DestIndex[i-1]=0) then
+      begin
+       tempresult:=ld_calculate_formula(tempformula,
+       ['S='+IntToStr(endoffset),'A='+IntToStr(ldfile.Adjust.Addend[i-1]),
+        'B=0','T='+IntToStr(Byte(ldfile.Adjust.AdjustFunc[i-1])),
+        'P='+IntToStr(startoffset),
+        'Pa='+IntToStr(startoffset and $FFFFFFFC),
+        'PLT='+IntToStr(startoffset),
+        'GOT_ORG='+IntToStr(tempfinal.GotPltAddr),
+        'GOT='+IntToStr(tempfinal.GotPltAddr+writepos[2]*ldbit shl 2)]);
+      end
+     else
+      begin
+       tempresult:=ld_calculate_formula(tempformula,
+       ['S='+IntToStr(endoffset),'A='+IntToStr(ldfile.Adjust.Addend[i-1]),
+        'B=0','T='+IntToStr(Byte(ldfile.Adjust.AdjustFunc[i-1])),
+        'P='+IntToStr(startoffset),
+        'Pa='+IntToStr(startoffset and $FFFFFFFC),
+        'PLT='+IntToStr(startoffset),
+        'GOT_ORG='+IntToStr(tempfinal.GotAddr),
+        'GOT='+IntToStr(tempfinal.GotAddr+writepos[1]*ldbit shl 2)]);
+      end;
+     if(isrelative=false) or ((isgotbase) or (isgotoffset)) or (ldfile.Adjust.DestIndex[i-1]=0) then
+      begin
+       if(isexternal) or (ldfile.Adjust.DestIndex[i-1]=0) then
+        begin
+         SetLength(tempfinal.Rela.SymOffset,tempfinal.Rela.SymCount);
+         tempfinal.Rela.SymOffset[offset2-1]:=tempfinal.GotPltAddr+writepos[2]*ldbit shl 2;
+         tempfinal.GotPltTable[writepos[2]]:=endoffset+ldfile.Adjust.Addend[i-1];
+         tempfinal.Rela.SymAddend[offset2-1]:=endoffset+ldfile.Adjust.Addend[i-1];
+         tempfinal.Rela.SymType[offset2-1]:=elf_reloc_arm_absolute_32bit;
+         k:=1;
+         while(k<=tempfinal.DynSym.SymbolCount)do
+          begin
+           if(tempfinal.DynSym.SymbolName[k-1]=ldfile.Adjust.AdjustName[i-1]) then break;
+           inc(k);
+          end;
+         if(k<=tempfinal.DynSym.SymbolCount) then
+          begin
+           tempfinal.Rela.SymType[offset2-1]:=k shl 8+tempfinal.Rela.SymType[offset2-1];
+          end;
+        end
+       else
+        begin
+         SetLength(tempfinal.Rela.SymOffset,tempfinal.Rela.SymCount);
+         tempfinal.Rela.SymOffset[offset1-1]:=tempfinal.GotAddr+writepos[1]*ldbit shl 2;
+         tempfinal.GotTable[writepos[1]]:=endoffset+ldfile.Adjust.Addend[i-1];
+         tempfinal.Rela.SymAddend[offset1-1]:=endoffset+ldfile.Adjust.Addend[i-1];
+         tempfinal.Rela.SymType[offset1-1]:=elf_reloc_arm_relative;
+        end;
+      end;
+     negative:=false;
+     if(tempresult<0) then
+      begin
+       tempresult:=-tempresult; negative:=true;
+      end;
+     if(tempformula.mask<>0) then tempresult:=tempresult and tempformula.mask;
+     if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_arm_pc_relative_13bit_branch) or
+     ((ldfile.Adjust.AdjustType[i-1]>=elf_reloc_arm_ldr_str_ldrb_strb_pc_relative_g1)
+     and (ldfile.Adjust.AdjustType[i-1]<=elf_reloc_arm_ldr_str_pc_relative_g2))
+     or ((ldfile.Adjust.AdjustType[i-1]>=elf_reloc_arm_program_base_relative_ldr_str_ldrb_strb_g0)
+     and (ldfile.Adjust.AdjustType[i-1]<=elf_reloc_arm_program_base_relative_ldrs_g2)) then
+      begin
+       d1:=0;
+       if(negative=false) then d1:=1 shl 23;
+       d1:=d1 or tempresult;
+       d2:=1 shl 23+$FFF; d2:=Pdword(changeptr)^ and (not d2);
+       d3:=d1+d2;
+       Pdword(changeptr)^:=d3;
+      end
+     else if((ldfile.Adjust.AdjustType[i-1]>=elf_reloc_arm_ldc_stc_pc_relative_g0) and
+     (ldfile.Adjust.AdjustType[i-1]<=elf_reloc_arm_ldc_stc_pc_relative_g2))
+     or((ldfile.Adjust.AdjustType[i-1]>=elf_reloc_arm_ldc_base_relative_g0) and
+     (ldfile.Adjust.AdjustType[i-1]<=elf_reloc_arm_ldc_base_relative_g2)) then
+      begin
+       d1:=0;
+       if(negative=false) then d1:=1 shl 23;
+       d1:=d1 or tempresult;
+       d2:=1 shl 23+$FFF; d2:=Pdword(changeptr)^ and (not d2);
+       d3:=d1+d2;
+       Pdword(changeptr)^:=d3;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_arm_thumb_absolute_5bit) then
+      begin
+       d1:=(tempresult shr 2) and $7C0;
+       d2:=Pdword(changeptr)^ and (not $000007C0);
+       d3:=d1+d2;
+       Pdword(changeptr)^:=d3;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_arm_thumb_pc_8bit) then
+      begin
+       d1:=(tempresult shr 2) and $FF;
+       d2:=Pdword(changeptr)^ and (not $000000FF);
+       d3:=d1+d2;
+       Pdword(changeptr)^:=d3;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_arm_thumb_pc_relative_6bit_b) then
+      begin
+       d1:=(tempresult shr 6) and 1 shl 9+(tempresult shr 1) and $1F;
+       d2:=Pdword(changeptr)^ and (not $000002FF);
+       d3:=d1+d2;
+       Pdword(changeptr)^:=d3;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_arm_thumb_pc_11bit) then
+      begin
+       d1:=(tempresult shr 1) and $3FF;
+       d2:=Pdword(changeptr)^ and (not $000003FF);
+       d3:=d1+d2;
+       Pdword(changeptr)^:=d3;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_arm_thumb_pc_9bit) then
+      begin
+       d1:=(tempresult shr 1) and $FF;
+       d2:=Pdword(changeptr)^ and (not $000000FF);
+       d3:=d1+d2;
+       Pdword(changeptr)^:=d3;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_arm_thumb_alu_abs_g0_no_check) then
+      begin
+       d1:=tempresult and $FF;
+       d2:=Pdword(changeptr)^ and (not $000000FF);
+       d3:=d1+d2;
+       Pdword(changeptr)^:=d3;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_arm_thumb_alu_abs_g1_no_check) then
+      begin
+       d1:=(tempresult shr 8) and $FF;
+       d2:=Pdword(changeptr)^ and (not $000000FF);
+       d3:=d1+d2;
+       Pdword(changeptr)^:=d3;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_arm_thumb_alu_abs_g2_no_check) then
+      begin
+       d1:=(tempresult shr 16) and $FF;
+       d2:=Pdword(changeptr)^ and (not $000000FF);
+       d3:=d1+d2;
+       Pdword(changeptr)^:=d3;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_arm_thumb_alu_abs_g3) then
+      begin
+       d1:=(tempresult shr 24) and $FF;
+       d2:=Pdword(changeptr)^ and (not $000000FF);
+       d3:=d1+d2;
+       Pdword(changeptr)^:=d3;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_arm_thumb_pc_22bit) then
+      begin
+       d1:=tempresult and $003FFFFF;
+       d2:=Pdword(changeptr)^ and (not $003FFFFF);
+       d3:=d1+d2;
+       Pdword(changeptr)^:=d3;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_arm_thumb_pc_relative_24bit) then
+      begin
+       d2:=tempresult and $7FF;
+       d3:=tempresult shr 11 and $3FF;
+       d2:=d2+d3 shl 16;
+       d4:=Pdword(changeptr)^ and (not ($000003FF shl 16+$000007FF));
+       d4:=d4+d2;
+       Pdword(changeptr)^:=d4;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_arm_thumb_movw_absolute)
+     or(ldfile.Adjust.AdjustType[i-1]=elf_reloc_arm_thumb_movw_pc_relative)
+     or(ldfile.Adjust.AdjustType[i-1]=elf_reloc_arm_thumb_movw_base_relative_no_check)
+     or(ldfile.Adjust.AdjustType[i-1]=elf_reloc_arm_thumb_movw_base_relative) then
+      begin
+       d1:=tempresult and $FF;
+       d2:=tempresult shr 12;
+       d3:=tempresult shr 8 and $7;
+       d4:=tempresult shr 11 and $1;
+       d5:=Pdword(changeptr)^ and (not ($000000FF+$00000007 shl 12+$00000001 shl 26+$0000000F shl 16));
+       d6:=d5+d1+d2 shl 16+d4 shl 26+d3 shl 12;
+       Pdword(changeptr)^:=d6;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_arm_thumb_movt_absolute)
+     or(ldfile.Adjust.AdjustType[i-1]=elf_reloc_arm_thumb_movt_pc_relative)
+     or(ldfile.Adjust.AdjustType[i-1]=elf_reloc_arm_thumb_movt_base_relative) then
+      begin
+       d1:=(tempresult shr 16) and $FF;
+       d2:=tempresult shr 28;
+       d3:=tempresult shr 24 and $7;
+       d4:=tempresult shr 27 and $1;
+       d5:=Pdword(changeptr)^ and (not ($000000FF+$00000007 shl 12+$00000001 shl 26+$0000000F shl 16));
+       d6:=d5+d1+d2 shl 16+d4 shl 26+d3 shl 12;
+       Pdword(changeptr)^:=d6;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_arm_thumb_pc_relative_20bit_b) then
+      begin
+       d1:=tempresult and $7FF;
+       d2:=tempresult shr 11 and $3F;
+       d2:=d2 shl 16+d1;
+       d3:=Pdword(changeptr)^ and (not ($000007FF+$0000003F shl 16));
+       d3:=d3+d2;
+       Pdword(changeptr)^:=d3;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_arm_thumb_alu_pc_relative_bit11_0) then
+      begin
+       d1:=tempresult shr 11;
+       d2:=tempresult shr 8 and $7;
+       d3:=tempresult and $FF;
+       d4:=d1 shl 26+d2 shl 12+d3;
+       d5:=Pdword(changeptr)^ and (not (1 shl 26+$7 shl 12+$FF));
+       d5:=d5+d4;
+       Pdword(changeptr)^:=d5;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_arm_thumb_pc_12bit) then
+      begin
+       d1:=0;
+       if(negative=false) then d1:=1 shl 23;
+       d1:=d1 or tempresult;
+       d2:=1 shl 23+$FFF; d2:=Pdword(changeptr)^ and (not d2);
+       d1:=d1+d2;
+       Pdword(changeptr)^:=d1;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_arm_thumb_got_entry_relative_to_got_origin) then
+      begin
+       d1:=Pdword(changeptr)^ and (not (1 shl 23+$FFF));
+       d1:=d1+tempresult;
+       Pdword(changeptr)^:=d1;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_arm_thumb_bf16) then
+      begin
+       d1:=tempresult shr 2 and $000003FF;
+       d2:=tempresult shr 1 and 1;
+       d3:=tempresult shr 12;
+       d4:=d1 shl 1+d2 shl 11+d3 shl 16;
+       d2:=Pdword(changeptr)^ and (not ($000003FF shl 1+$00000001 shl 11+$0000001F shl 16));
+       d4:=d4+d2;
+       Pdword(changeptr)^:=d4;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_arm_thumb_bf12) then
+      begin
+       d1:=tempresult shr 2 and $000003FF;
+       d2:=tempresult shr 1 and 1;
+       d3:=tempresult shr 12;
+       d4:=d1 shl 1+d2 shl 11+d3 shl 16;
+       d2:=Pdword(changeptr)^ and (not ($000003FF shl 1+$00000001 shl 11+$00000001 shl 16));
+       d4:=d4+d2;
+       Pdword(changeptr)^:=d4;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_arm_thumb_bf18) then
+      begin
+       d1:=tempresult shr 2 and $000003FF;
+       d2:=tempresult shr 1 and 1;
+       d3:=tempresult shr 12;
+       d4:=d1 shl 1+d2 shl 11+d3 shl 16;
+       d2:=Pdword(changeptr)^ and (not ($000003FF shl 1+$00000001 shl 11+$0000007F shl 16));
+       d4:=d4+d2;
+       Pdword(changeptr)^:=d4;
+      end
+     else if(tempformula.mask<>0) then
+      begin
+       d1:=Pdword(changeptr)^ and (not Dword(tempformula.mask));
+       d1:=d1+tempresult;
+       Pdword(changeptr)^:=d1;
+      end
+     else if(tempformula.bit=32) then
+      begin
+       PInteger(changeptr)^:=tempresult and $FFFFFFFF;
+      end
+     else if(tempformula.bit=16) then
+      begin
+       PShortint(changeptr)^:=tempresult and $FFFF;
+      end
+     else if(tempformula.bit=8) then
+      begin
+       PSmallint(changeptr)^:=tempresult and $FF;
+      end
+    end
+   else if(ldarch=elf_machine_aarch64) then
+    begin
+     if(isexternal) or (ldfile.Adjust.DestIndex[i-1]=0) then
+      begin
+       tempresult:=ld_calculate_formula(tempformula,
+       ['S='+IntToStr(endoffset),'A='+IntToStr(ldfile.Adjust.Addend[i-1]),
+        'Delta=0','P='+IntToStr(startoffset),
+        'GDAT='+IntToStr(writepos[2]*ldbit shl 2),
+        'GOT='+IntToStr(tempfinal.GotPltAddr),
+        'G='+IntToStr(tempfinal.GotPltAddr)]);
+      end
+     else
+      begin
+       tempresult:=ld_calculate_formula(tempformula,
+       ['S='+IntToStr(endoffset),'A='+IntToStr(ldfile.Adjust.Addend[i-1]),
+        'Delta=0','P='+IntToStr(startoffset),
+        'GDAT='+IntToStr(writepos[1]*ldbit shl 2),
+        'GOT='+IntToStr(tempfinal.GotAddr),
+        'G='+IntToStr(tempfinal.GotAddr)]);
+      end;
+     if(isrelative=false) or ((isgotbase) or (isgotoffset)) or (ldfile.Adjust.DestIndex[i-1]=0) then
+      begin
+       if(isexternal) or (ldfile.Adjust.DestIndex[i-1]=0) then
+        begin
+         SetLength(tempfinal.Rela.SymOffset,tempfinal.Rela.SymCount);
+         tempfinal.Rela.SymOffset[offset2-1]:=tempfinal.GotPltAddr+writepos[2]*ldbit shl 2;
+         tempfinal.GotPltTable[writepos[2]]:=0;
+         tempfinal.Rela.SymAddend[offset2-1]:=0;
+         tempfinal.Rela.SymType[offset2-1]:=elf_reloc_aarch64_absolute_64bit;
+         k:=1;
+         while(k<=tempfinal.DynSym.SymbolCount)do
+          begin
+           if(tempfinal.DynSym.SymbolName[k-1]=ldfile.Adjust.AdjustName[i-1]) then break;
+           inc(k);
+          end;
+         if(k<=tempfinal.DynSym.SymbolCount) then
+          begin
+           tempfinal.Rela.SymType[offset2-1]:=k shl 32+tempfinal.Rela.SymType[offset2-1];
+          end;
+        end
+       else
+        begin
+         SetLength(tempfinal.Rela.SymOffset,tempfinal.Rela.SymCount);
+         tempfinal.Rela.SymOffset[offset1-1]:=tempfinal.GotAddr+writepos[1]*ldbit shl 2;
+         tempfinal.GotTable[writepos[1]]:=endoffset+ldfile.Adjust.Addend[i-1];
+         tempfinal.Rela.SymAddend[offset1-1]:=endoffset+ldfile.Adjust.Addend[i-1];
+         tempfinal.Rela.SymType[offset1-1]:=elf_reloc_aarch64_relative;
+        end;
+      end;
+     negative:=false;
+     if(tempresult<0) then
+      begin
+       tempresult:=-tempresult; negative:=true;
+      end;
+     if(tempformula.mask<>0) then tempresult:=tempresult and tempformula.mask;
+     if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_aarch64_movz_imm_bit15_0)
+     or(ldfile.Adjust.AdjustType[i-1]=elf_reloc_aarch64_movk_imm_bit15_0)
+     or(ldfile.Adjust.AdjustType[i-1]=elf_reloc_aarch64_pc_rel_movk_imm_bit15_0)
+     or(ldfile.Adjust.AdjustType[i-1]=elf_reloc_aarch64_got_rel_offset_movk_imm_bit15_0) then
+      begin
+       d1:=tempresult and $FFFF;
+       d2:=Pdword(changeptr)^ and (not ($0000FFFF shl 5));
+       d2:=d2+d1 shl 5;
+       Pdword(changeptr)^:=d2;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_aarch64_movz_imm_bit31_16)
+     or(ldfile.Adjust.AdjustType[i-1]=elf_reloc_aarch64_movk_imm_bit31_16)
+     or(ldfile.Adjust.AdjustType[i-1]=elf_reloc_aarch64_pc_rel_movk_imm_bit31_16)
+     or(ldfile.Adjust.AdjustType[i-1]=elf_reloc_aarch64_got_rel_offset_movk_imm_bit31_16)then
+      begin
+       d1:=(tempresult shr 16) and $FFFF;
+       d2:=Pdword(changeptr)^ and (not ($0000FFFF shl 5));
+       d2:=d2+d1 shl 5;
+       Pdword(changeptr)^:=d2;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_aarch64_movz_imm_bit47_32)
+     or(ldfile.Adjust.AdjustType[i-1]=elf_reloc_aarch64_movk_imm_bit47_32)
+     or(ldfile.Adjust.AdjustType[i-1]=elf_reloc_aarch64_pc_rel_movk_imm_bit47_32)
+     or(ldfile.Adjust.AdjustType[i-1]=elf_reloc_aarch64_got_rel_offset_movk_imm_bit47_32)then
+      begin
+       d1:=(tempresult shr 32) and $FFFF;
+       d2:=Pdword(changeptr)^ and (not ($0000FFFF shl 5));
+       d2:=d2+d1 shl 5;
+       Pdword(changeptr)^:=d2;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_aarch64_movn_z_imm_bit15_0)
+     or (ldfile.Adjust.AdjustType[i-1]=elf_reloc_aarch64_pc_rel_movn_z_imm_bit15_0)
+     or (ldfile.Adjust.AdjustType[i-1]=elf_reloc_aarch64_got_rel_offset_movn_z_imm_bit15_0)then
+      begin
+       if(negative=false) then d1:=1 shl 30 else d1:=0;
+       d2:=Pdword(changeptr)^ and (not ($0000FFFF shl 5+1 shl 30));
+       if(negative=false) then d1:=d1+tempresult and $FFFF else d1:=d1+not Word(tempresult and $FFFF);
+       d2:=d2+d1 shl 5;
+       Pdword(changeptr)^:=d2;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_aarch64_movn_z_imm_bit31_16)
+     or (ldfile.Adjust.AdjustType[i-1]=elf_reloc_aarch64_pc_rel_movn_z_imm_bit31_16)
+     or (ldfile.Adjust.AdjustType[i-1]=elf_reloc_aarch64_got_rel_offset_movn_z_imm_bit31_16)then
+      begin
+       if(negative=false) then d1:=1 shl 30 else d1:=0;
+       d2:=Pdword(changeptr)^ and (not ($0000FFFF shl 5+1 shl 30));
+       if(negative=false) then d1:=d1+(tempresult shr 16) and $FFFF else d1:=d1+not Word((tempresult shr 16) and $FFFF);
+       d2:=d2+d1 shl 5;
+       Pdword(changeptr)^:=d2;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_aarch64_movn_z_imm_bit47_32)
+     or(ldfile.Adjust.AdjustType[i-1]=elf_reloc_aarch64_pc_rel_movn_z_imm_bit47_32)
+     or (ldfile.Adjust.AdjustType[i-1]=elf_reloc_aarch64_got_rel_offset_movn_z_imm_bit47_32)then
+      begin
+       if(negative=false) then d1:=1 shl 30 else d1:=0;
+       d2:=Pdword(changeptr)^ and (not ($0000FFFF shl 5+1 shl 30));
+       if(negative=false) then d1:=d1+(tempresult shr 32) and $FFFF else d1:=d1+not Word((tempresult shr 32) and $FFFF);
+       d2:=d2+d1 shl 5;
+       Pdword(changeptr)^:=d2;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_aarch64_pc_rel_movn_z_imm_bit63_48)
+     or (ldfile.Adjust.AdjustType[i-1]=elf_reloc_aarch64_got_rel_offset_movn_z_imm_bit63_48) then
+      begin
+       if(negative=false) then d1:=1 shl 30 else d1:=0;
+       d2:=Pdword(changeptr)^ and (not ($0000FFFF shl 5+1 shl 30));
+       if(negative=false) then d1:=d1+(tempresult shr 48) and $FFFF else d1:=d1+not Word((tempresult shr 48) and $FFFF);
+       d2:=d2+d1 shl 5;
+       Pdword(changeptr)^:=d2;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_aarch64_ldr_literal_pc_rel_low19bit)
+     or(ldfile.Adjust.AdjustType[i-1]=elf_reloc_aarch64_pc_rel_got_offset) then
+      begin
+       if(negative) then d1:=ld_calc_comple(-(tempresult shr 2),19,true)
+       else d1:=(tempresult shr 2) and $0007FFFF;
+       d2:=Pdword(changeptr)^ and (not ($0007FFFF shl 5));
+       if(negative) then d2:=d2+d1 shl 5+1 shl 23 else d2:=d2+d1 shl 5;
+       Pdword(changeptr)^:=d2;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_aarch64_adr_pc_rel_low21bit) then
+      begin
+       if(negative) then d1:=ld_calc_comple(-tempresult,21,true)
+       else d1:=tempresult and $001FFFFF;
+       d2:=d1 and 3; d3:=(d1 shr 2) and $7FFFF;
+       d4:=Pdword(changeptr)^ and (not ($0007FFFF shl 5+$00000003 shl 29));
+       d4:=d4+d2 shl 29+d3 shl 5;
+       Pdword(changeptr)^:=d4;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_aarch64_adrp_page_rel_bit32_12)
+     or(ldfile.Adjust.AdjustType[i-1]=elf_reloc_aarch64_adrp_page_rel_bit32_12_no_check)
+     or(ldfile.Adjust.AdjustType[i-1]=elf_reloc_aarch64_page_rel_adrp_bit32_12)then
+      begin
+       if(negative) then d1:=ld_calc_comple(-(tempresult shr 12),21,true)
+       else d1:=(tempresult shr 12) and $001FFFFF;
+       d2:=d1 and 3; d3:=(d1 shr 2) and $7FFFF;
+       d4:=Pdword(changeptr)^ and (not ($0007FFFF shl 5+$00000003 shl 29));
+       d4:=d4+d2 shl 29+d3 shl 5;
+       Pdword(changeptr)^:=d4;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_aarch64_add_absolute_low12bit) then
+      begin
+       d1:=tempresult and $00000FFF;
+       d2:=Pdword(changeptr)^ and (not ($00000FFF shl 10));
+       d2:=d2+d1 shl 10;
+       Pdword(changeptr)^:=d2;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_aarch64_ld_or_st_absolute_low12bit) then
+      begin
+       d1:=tempresult and $00000FFF;
+       d2:=Pdword(changeptr)^ and (not ($00000FFF shl 10));
+       d2:=d2+d1 shl 10;
+       Pdword(changeptr)^:=d2;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_aarch64_add_bit16_imm_bit11_1) then
+      begin
+       d1:=(tempresult shr 1) and $7FF;
+       d2:=Pdword(changeptr)^ and (not ($00000FFF shl 10));
+       d2:=d2+d1 shl 11;
+       Pdword(changeptr)^:=d2;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_aarch64_add_bit32_imm_bit11_2) then
+      begin
+       d1:=(tempresult shr 2) and $3FF;
+       d2:=Pdword(changeptr)^ and (not ($000003FF shl 10));
+       d2:=d2+d1 shl 12;
+       Pdword(changeptr)^:=d2;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_aarch64_add_bit64_imm_bit11_3) then
+      begin
+       d1:=(tempresult shr 3) and $1FF;
+       d2:=Pdword(changeptr)^ and (not ($00000FFF shl 10));
+       d2:=d2+d1 shl 13;
+       Pdword(changeptr)^:=d2;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_aarch64_add_bit128_imm_from_bit11_4) then
+      begin
+       d1:=(tempresult shr 4) and $7F;
+       d2:=Pdword(changeptr)^ and (not ($00000FFF shl 10));
+       d2:=d2+d1 shl 10;
+       Pdword(changeptr)^:=d2;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_aarch64_pc_rel_tbz_bit15_2) then
+      begin
+       d1:=(tempresult shr 2) and $1FFF;
+       d2:=Pdword(changeptr)^ and (not ($00003FFF shl 5));
+       d2:=d2+d1 shl 5;
+       Pdword(changeptr)^:=d2;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_aarch64_pc_rel_cond_or_br_bit20_2) then
+      begin
+       if(negative) then d1:=ld_calc_comple(-(tempresult shr 2),19,true)
+       else d1:=(tempresult shr 2) and $7FFFF;
+       d2:=Pdword(changeptr)^ and (not ($0007FFFF shl 5));
+       d2:=d2+d1 shl 5;
+       Pdword(changeptr)^:=d2;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_aarch64_pc_rel_jump_bit27_2) or
+     (ldfile.Adjust.AdjustType[i-1]=elf_reloc_aarch64_pc_rel_call_bit27_2)then
+      begin
+       if(negative) then d1:=ld_calc_comple(-(tempresult shr 2),26,true)
+       else d1:=(tempresult shr 2) and $03FFFFFF;
+       d2:=Pdword(changeptr)^ and (not $03FFFFFF);
+       d2:=d2+d1;
+       Pdword(changeptr)^:=d2;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_aarch64_got_rel_offset_ld_st_imm_bit14_3)
+     or(ldfile.Adjust.AdjustType[i-1]=elf_reloc_aarch64_got_page_rel_got_offset_ld_st_bit14_3) then
+      begin
+       d1:=(tempresult shr 3) and $FFF;
+       d2:=Pdword(changeptr)^ and (not ($00000FFF shl 10));
+       d2:=d2+d1 shl 10;
+       Pdword(changeptr)^:=d2;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_aarch64_dir_got_offset_ld_st_imm_bit11_3) then
+      begin
+       if(tempresult>$1FF) and (negative=false) then
+        begin
+         d1:=(tempresult shr 3) and $FFF;
+         d2:=Pdword(changeptr)^ and (not ($000001FF shl 12+$00000001 shl 11+$00000001 shl 24));
+         d2:=d2+d1 shl 10+1 shl 24;
+         Pdword(changeptr)^:=d2;
+        end
+       else
+        begin
+         d1:=(tempresult shr 3) and $1FF;
+         d2:=Pdword(changeptr)^ and (not ($000001FF shl 12+$00000001 shl 11));
+         if(negative) then d2:=d2+d1 shl 12+1 shl 11 else d2:=d2+d1 shl 12;
+         Pdword(changeptr)^:=d2;
+        end;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_aarch64_got_relative_64bit) then
+      begin
+       PInt64(changeptr)^:=tempresult;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_aarch64_got_relative_32bit)
+     or(ldfile.Adjust.AdjustType[i-1]=elf_reloc_aarch64_pc_relative_got_offset32) then
+      begin
+       PInteger(changeptr)^:=tempresult;
+      end
+     else if(tempformula.mask<>0) and (tempformula.bit=64) then
+      begin
+       q1:=Pqword(changeptr)^ and (not tempformula.mask);
+       q1:=q1+tempresult;
+       Pqword(changeptr)^:=q1;
+      end
+     else if(tempformula.mask<>0) and (tempformula.bit=32) then
+      begin
+       d1:=Pdword(changeptr)^ and (not Dword(tempformula.mask));
+       d1:=d1+tempresult;
+       Pdword(changeptr)^:=d1;
+      end
+     else if(tempformula.bit=64) then
+      begin
+       PInt64(changeptr)^:=tempresult;
+      end
+     else if(tempformula.bit=32) then
+      begin
+       PInteger(changeptr)^:=Integer(tempresult and $FFFFFFFF);
+      end
+     else if(tempformula.bit=16) then
+      begin
+       Pshortint(changeptr)^:=SmallInt(tempresult and $FFFF);
+      end
+     else if(tempformula.bit=8) then
+      begin
+       Psmallint(changeptr)^:=Shortint(tempresult and $FF);
+      end;
+    end
+   else if(ldarch=elf_machine_riscv) then
+    begin
+     if(ldfile.Adjust.Formula[i-1].bit=8) and
+     ((ldfile.Adjust.AdjustType[i-1]=elf_reloc_riscv_add_8bit)
+     or(ldfile.Adjust.AdjustType[i-1]=elf_reloc_riscv_sub_8bit)) then
+      begin
+       q1:=Pbyte(changeptr)^;
+      end
+     else if(ldfile.Adjust.Formula[i-1].bit=16) and
+     ((ldfile.Adjust.AdjustType[i-1]=elf_reloc_riscv_add_16bit)
+     or(ldfile.Adjust.AdjustType[i-1]=elf_reloc_riscv_sub_16bit)) then
+      begin
+       q1:=Pword(changeptr)^;
+      end
+     else if(ldfile.Adjust.Formula[i-1].bit=32) and
+     ((ldfile.Adjust.AdjustType[i-1]=elf_reloc_riscv_add_32bit)
+     or(ldfile.Adjust.AdjustType[i-1]=elf_reloc_riscv_sub_32bit)) then
+      begin
+       q1:=Pdword(changeptr)^;
+      end
+     else if(ldfile.Adjust.Formula[i-1].bit=64) and
+     ((ldfile.Adjust.AdjustType[i-1]=elf_reloc_riscv_add_64bit)
+     or(ldfile.Adjust.AdjustType[i-1]=elf_reloc_riscv_sub_64bit)) then
+      begin
+       q1:=Pqword(changeptr)^;
+      end;
+     if(isexternal) or (ldfile.Adjust.DestIndex[i-1]=0) then
+      begin
+       tempresult:=ld_calculate_formula(tempformula,
+       ['S='+IntToStr(endoffset),'A='+IntToStr(ldfile.Adjust.Addend[i-1]),
+        'Delta=0','P='+IntToStr(startoffset),'V='+IntToStr(q1),
+        'G='+IntToStr(writepos[2]*ldbit shl 2),
+        'GOT='+IntToStr(tempfinal.GotPltAddr)]);
+      end
+     else
+      begin
+       tempresult:=ld_calculate_formula(tempformula,
+       ['S='+IntToStr(endoffset),'A='+IntToStr(ldfile.Adjust.Addend[i-1]),
+        'Delta=0','P='+IntToStr(startoffset),'V='+IntToStr(q1),
+        'G='+IntToStr(writepos[1]*ldbit shl 2),
+        'GOT='+IntToStr(tempfinal.GotAddr)]);
+      end;
+     negative:=false;
+     if(tempresult<0) then
+      begin
+       tempresult:=-tempresult; negative:=true;
+      end;
+     if(isrelative=false) or ((isgotbase) or (isgotoffset)) or (ldfile.Adjust.DestIndex[i-1]=0) then
+      begin
+       if(isexternal) or (ldfile.Adjust.DestIndex[i-1]=0) then
+        begin
+         SetLength(tempfinal.Rela.SymOffset,tempfinal.Rela.SymCount);
+         tempfinal.Rela.SymOffset[offset2-1]:=tempfinal.GotPltAddr+writepos[2]*ldbit shl 2;
+         tempfinal.GotPltTable[writepos[2]]:=0;
+         tempfinal.Rela.SymAddend[offset2-1]:=0;
+         if(ldbit=1) then
+         tempfinal.Rela.SymType[offset2-1]:=elf_reloc_riscv_32bit
+         else if(ldbit=2) then
+         tempfinal.Rela.SymType[offset2-1]:=elf_reloc_riscv_64bit;
+         k:=1;
+         while(k<=tempfinal.DynSym.SymbolCount)do
+          begin
+           if(tempfinal.DynSym.SymbolName[k-1]=ldfile.Adjust.AdjustName[i-1]) then break;
+           inc(k);
+          end;
+         if(k<=tempfinal.DynSym.SymbolCount) and (ldbit=1) then
+          begin
+           tempfinal.Rela.SymType[offset2-1]:=k shl 8+tempfinal.Rela.SymType[offset2-1];
+          end
+         else if(k<=tempfinal.DynSym.SymbolCount) and (ldbit=2) then
+          begin
+           tempfinal.Rela.SymType[offset2-1]:=k shl 32+tempfinal.Rela.SymType[offset2-1];
+          end;
+        end
+       else
+        begin
+         SetLength(tempfinal.Rela.SymOffset,tempfinal.Rela.SymCount);
+         tempfinal.Rela.SymOffset[offset1-1]:=tempfinal.GotAddr+writepos[1]*ldbit shl 2;
+         tempfinal.GotTable[writepos[1]]:=endoffset+ldfile.Adjust.Addend[i-1];
+         tempfinal.Rela.SymAddend[offset1-1]:=endoffset+ldfile.Adjust.Addend[i-1];
+         tempfinal.Rela.SymType[offset1-1]:=elf_reloc_riscv_relative;
+        end;
+      end;
+     if(tempformula.mask=0) then
+      begin
+       if(tempformula.bit=6) then
+        begin
+         d1:=Pbyte(changeptr)^ and $C0;
+         d2:=tempresult and $3F;
+         Pbyte(changeptr)^:=d1+d2;
+        end
+       else if(tempformula.bit=8) then
+        begin
+         Pbyte(changeptr)^:=tempresult and $FF;
+        end
+       else if(tempformula.bit=16) then
+        begin
+         Pword(changeptr)^:=tempresult and $FFFF;
+        end
+       else if(tempformula.bit=32) then
+        begin
+         Pdword(changeptr)^:=tempresult and $FFFFFFFF;
+        end
+       else if(tempformula.bit=64) then
+        begin
+         Pqword(changeptr)^:=tempresult;
+        end;
+      end
+     else if(tempformula.mask=elf_riscv_b_type) then
+      begin
+       if(negative) then d1:=ld_calc_comple(-((tempresult shr 1) and $FFF),12,true)
+       else d1:=(tempresult shr 1) and $FFF;
+       d2:=d1 and $F; d3:=(d1 shr 4) and $3F; d4:=(d1 shr 10) and $1;
+       d5:=(d1 shr 11) and $1;
+       d6:=Pdword(changeptr)^ and (not ($1F shl 7+$7F shl 25));
+       d6:=d6+d2 shl 8+d3 shl 25+d4 shl 7+d5 shl 31;
+       Pdword(changeptr)^:=d6;
+      end
+     else if(tempformula.mask=elf_riscv_cb_type) then
+      begin
+       if(negative) then d7:=ld_calc_comple(-((tempresult shr 1) and $FF),8,true)
+       else d7:=(tempresult shr 1) and $FF;
+       d1:=(d7 and $3); d2:=(d7 shr 2) and $3;
+       d3:=(d7 shr 4) and $1; d4:=(d7 shr 5) and $3;
+       d5:=(d7 shr 7) and $1;
+       d6:=Pword(changeptr)^ and (not ($1F shl 2+$7 shl 10));
+       d6:=d6+d1 shl 3+d2 shl 10+d3 shl 2+d4 shl 5+d5 shl 12;
+       Pword(changeptr)^:=d6;
+      end
+     else if(tempformula.mask=elf_riscv_cj_type) then
+      begin
+       if(negative) then d10:=ld_calc_comple(-((tempresult shr 1) and $7FF),11,true) shl 1
+       else d10:=tempresult and $FFE;
+       d1:=(d10 and $20) shr 5; d2:=(d10 and $E) shr 1;
+       d3:=(d10 and $40) shr 7; d4:=(d10 and $20) shr 6;
+       d5:=(d10 and $400) shr 10; d6:=(d10 and $300) shr 8;
+       d7:=(d10 and $10) shr 4;
+       d8:=(d10 and $800) shr 11;
+       d9:=Pword(changeptr)^ and (not ($7FF shl 2));
+       d9:=d9+d1 shl 2+d2 shl 3+d3 shl 6+d4 shl 7+d5 shl 8+d6 shl 9+d7 shl 11+d8 shl 12;
+       Pword(changeptr)^:=d9;
+      end
+     else if(tempformula.mask=elf_riscv_i_type) then
+      begin
+       if(negative) then d1:=ld_calc_comple(-(tempresult and $FFF),12,true)
+       else d1:=tempresult and $FFF;
+       d2:=Pdword(changeptr)^ and $000FFFFF;
+       d2:=d2+d1 shl 20; Pdword(changeptr)^:=d2;
+      end
+     else if(tempformula.mask=elf_riscv_s_type) then
+      begin
+       if(negative) then d5:=ld_calc_comple((tempresult and $FFF),12,true)
+       else d5:=tempresult and $FFF;
+       d1:=d5 and $1F; d2:=(d5 shr 5) and $3F;
+       d3:=(d5 shr 11) and 1;
+       d4:=Pdword(changeptr)^ and (not ($1F shl 7+$7F shl 25));
+       d4:=d4+d1 shl 7+d2 shl 25+d3 shl 31; Pdword(changeptr)^:=d4;
+      end
+     else if(tempformula.mask=elf_riscv_u_type) then
+      begin
+       if(negative) then d2:=ld_calc_comple(-(tempresult shr 12),20,true)
+       else d2:=(tempresult shr 12) and $FFFFF;
+       d1:=Pdword(changeptr)^ and $00000FFF;
+       d1:=d1+d2 shl 12;
+       Pdword(changeptr)^:=d1;
+      end
+     else if(tempformula.mask=elf_riscv_j_type) then
+      begin
+       if(negative) then d1:=ld_calc_comple(-((tempresult shr 1) and $FFFFF),20,true)
+       else d1:=(tempresult shr 1) and $FFFFF;
+       d2:=d1 and $3FF; d3:=(d1 shr 10) and 1; d4:=(d1 shr 11) and $FF;
+       d5:=(d1 shr 19) and $1;
+       d6:=Pdword(changeptr)^ and $00000FFF;
+       d6:=d6+d2 shl 21+d3 shl 20+d4 shl 12+d5 shl 31;
+       Pdword(changeptr)^:=d6;
+      end
+     else if(tempformula.mask=elf_riscv_u_i_type) then
+      begin
+       if(tempresult and $FFF<=$7FF) then
+        begin
+         {Former is U Type}
+         if(negative) then d2:=ld_calc_comple(-(tempresult shr 12),20,true)
+         else d2:=(tempresult shr 12) and $FFFFF;
+         d1:=Pdword(changeptr)^ and $00000FFF;
+         d1:=d1+d2 shl 12;
+         Pdword(changeptr)^:=d1;
+         {Latter is I Type}
+         if(negative) then d1:=ld_calc_comple(-(tempresult and $FFF),12,true)
+         else d1:=tempresult and $FFF;
+         d2:=Pdword(changeptr+4)^ and $000FFFFF;
+         d2:=d2+d1 shl 20; Pdword(changeptr+4)^:=d2;
+        end
+       else
+        begin
+         {Former is U Type}
+         if(negative) then d2:=ld_calc_comple(-((tempresult+$1000) shr 12),20,true)
+         else d2:=((tempresult+$1000) shr 12) and $FFFFF;
+         d1:=Pdword(changeptr)^ and $00000FFF;
+         d1:=d1+d2 shl 12;
+         Pdword(changeptr)^:=d1;
+         {Latter is I Type}
+         if(negative=false) then d1:=ld_calc_comple(-(($1000-tempresult) and $FFF),12,true)
+         else d1:=($1000-tempresult) and $FFF;
+         d2:=Pdword(changeptr+4)^ and $000FFFFF;
+         d2:=d2+d1 shl 20; Pdword(changeptr+4)^:=d2;
+        end;
+      end;
+    end
+   else if(ldarch=elf_machine_loongarch) then
+    begin
+     if(isexternal) or (ldfile.Adjust.DestIndex[i-1]=0) then
+      begin
+       tempresult:=ld_calculate_formula(tempformula,
+       ['S='+IntToStr(endoffset),'A='+IntToStr(ldfile.Adjust.Addend[i-1]),
+        'PC='+IntToStr(startoffset),'B=0',
+        'GP='+IntToStr(tempfinal.GotPltAddr),'G='+IntToStr(writepos[2]*ldbit shl 2)]);
+      end
+     else
+      begin
+       tempresult:=ld_calculate_formula(tempformula,
+       ['S='+IntToStr(endoffset),'A='+IntToStr(ldfile.Adjust.Addend[i-1]),
+        'PC='+IntToStr(startoffset),'B=0',
+        'GP='+IntToStr(tempfinal.GotAddr),'G='+IntToStr(writepos[1]*ldbit shl 2)]);
+      end;
+     negative:=false;
+     if(tempresult<0) then
+      begin
+       tempresult:=-tempresult; negative:=true;
+      end;
+     if(isrelative=false) or ((isgotbase) or (isgotoffset)) or (ldfile.Adjust.DestIndex[i-1]=0) then
+      begin
+       if(isexternal) or (ldfile.Adjust.DestIndex[i-1]=0) then
+        begin
+         SetLength(tempfinal.Rela.SymOffset,tempfinal.Rela.SymCount);
+         tempfinal.Rela.SymOffset[offset2-1]:=tempfinal.GotPltAddr+writepos[2]*ldbit shl 2;
+         tempfinal.GotPltTable[writepos[2]]:=0;
+         tempfinal.Rela.SymAddend[offset2-1]:=0;
+         if(ldbit=1) then
+         tempfinal.Rela.SymType[offset2-1]:=elf_reloc_loongarch_32bit
+         else if(ldbit=2) then
+         tempfinal.Rela.SymType[offset2-1]:=elf_reloc_loongarch_64bit;
+         k:=1;
+         while(k<=tempfinal.DynSym.SymbolCount)do
+          begin
+           if(tempfinal.DynSym.SymbolName[k-1]=ldfile.Adjust.AdjustName[i-1]) then break;
+           inc(k);
+          end;
+         if(k<=tempfinal.DynSym.SymbolCount) and (ldbit=1) then
+          begin
+           tempfinal.Rela.SymType[offset2-1]:=k shl 8+tempfinal.Rela.SymType[offset2-1];
+          end
+         else if(k<=tempfinal.DynSym.SymbolCount) and (ldbit=2) then
+          begin
+           tempfinal.Rela.SymType[offset2-1]:=k shl 32+tempfinal.Rela.SymType[offset2-1];
+          end;
+        end
+       else
+        begin
+         SetLength(tempfinal.Rela.SymOffset,tempfinal.Rela.SymCount);
+         tempfinal.Rela.SymOffset[offset1-1]:=tempfinal.GotAddr+writepos[1]*ldbit shl 2;
+         tempfinal.GotTable[writepos[1]]:=endoffset+ldfile.Adjust.Addend[i-1];
+         tempfinal.Rela.SymAddend[offset1-1]:=endoffset+ldfile.Adjust.Addend[i-1];
+         tempfinal.Rela.SymType[offset1-1]:=elf_reloc_loongarch_relative;
+        end;
+      end;
+     if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_loongarch_add_8bit) or
+     (ldfile.Adjust.AdjustType[i-1]=elf_reloc_loongarch_sub_8bit) then
+      begin
+       Pbyte(changeptr)^:=tempresult and $FF;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_loongarch_add_16bit) or
+     (ldfile.Adjust.AdjustType[i-1]=elf_reloc_loongarch_sub_16bit) then
+      begin
+       Pword(changeptr)^:=tempresult and $FFFF;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_loongarch_add_32bit) or
+     (ldfile.Adjust.AdjustType[i-1]=elf_reloc_loongarch_sub_32bit) then
+      begin
+       Pdword(changeptr)^:=tempresult and $FFFFFFFF;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_loongarch_add_64bit) or
+     (ldfile.Adjust.AdjustType[i-1]=elf_reloc_loongarch_sub_64bit) then
+      begin
+       Pqword(changeptr)^:=tempresult;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_loongarch_b16) then
+      begin
+       if(negative) then d1:=ld_calc_comple(-(tempresult shr 2),16,true)
+       else d1:=(tempresult shr 2) and $FFFF;
+       d2:=Pdword(changeptr)^ and (not ($0000FFFF shl 10));
+       Pdword(changeptr)^:=d2+d1 shl 10;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_loongarch_b21) then
+      begin
+       if(negative) then d1:=ld_calc_comple(-(tempresult shr 2),21,true)
+       else d1:=(tempresult shr 2) and $1FFFFF;
+       d2:=(d1 shr 16) and $1F; d3:=d1 and $FFFF;
+       d4:=Pdword(changeptr)^ and (not ($0000FFFF shl 10+$1F));
+       Pdword(changeptr)^:=d4+d3 shl 10+d2;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_loongarch_b26) then
+      begin
+       if(negative) then d1:=ld_calc_comple(-(tempresult shr 2),26,true)
+       else d1:=(tempresult shr 2) and $3FFFFFF;
+       d2:=(d1 shr 16) and $3FF; d3:=d1 and $FFFF;
+       d4:=Pdword(changeptr)^ and (not ($0000FFFF shl 10+$3FF));
+       Pdword(changeptr)^:=d4+d3 shl 10+d2;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_loongarch_absolute_high_20bit) then
+      begin
+       d1:=(tempresult shr 12) and $FFFFF;
+       d2:=Pdword(changeptr)^ and (not ($FFFFF shl 5));
+       Pdword(changeptr)^:=d2+d1 shl 5;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_loongarch_absolute_low_12bit) then
+      begin
+       d1:=tempresult and $FFF;
+       d2:=Pdword(changeptr)^ and (not ($FFF shl 10));
+       Pdword(changeptr)^:=d2+d1 shl 10;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_loongarch_absolute_64bit_low_20bit) then
+      begin
+       if((tempresult shr 32) and $FFFFF<=$7FFFF) then
+        begin
+         if(negative) then d1:=ld_calc_comple((tempresult shr 32) and $FFFFF,20)
+         else d1:=(tempresult shr 32) and $FFFFF;
+         d2:=Pdword(changeptr)^ and (not ($FFFFF shl 5));
+         Pdword(changeptr)^:=d2+d1 shl 5;
+        end
+       else
+        begin
+         if(negative) then d1:=ld_calc_comple(($100000-tempresult shr 32) and $FFFFF,20)
+         else d1:=($100000-tempresult shr 32) and $FFFFF;
+         d2:=Pdword(changeptr)^ and (not ($FFFFF shl 5));
+         Pdword(changeptr)^:=d2+d1 shl 5;
+        end;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_loongarch_absolute_64bit_high_12bit) then
+      begin
+       if((tempresult shr 32) and $FFF<=$7FF) then
+        begin
+         if(negative) then d1:=ld_calc_comple(-((tempresult shr 52) and $FFF),12)
+         else d1:=(tempresult shr 52) and $FFF;
+         d2:=Pdword(changeptr)^ and (not ($FFF shl 10));
+         Pdword(changeptr)^:=d2+d1 shl 10;
+        end
+       else
+        begin
+         if(negative=false) then d1:=ld_calc_comple(-((tempresult shr 52+$1000) and $FFF),12)
+         else d1:=(tempresult shr 52+$1000) and $FFF;
+         d2:=Pdword(changeptr)^ and (not ($FFF shl 10));
+         Pdword(changeptr)^:=d2+d1 shl 10;
+        end;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_loongarch_absolute_pcala_high_20bit) then
+      begin
+       if(tempresult and $FFF<=$7FF) then
+        begin
+         if(negative) then d1:=ld_calc_comple(-((tempresult shr 12) and $FFFFF),20,true)
+         else d1:=(tempresult shr 12) and $FFFFF;
+         d2:=Pdword(changeptr)^ and (not ($FFFFF shl 5));
+         Pdword(changeptr)^:=d2+d1 shl 5;
+        end
+       else
+        begin
+         if(negative) then d1:=ld_calc_comple(-(((tempresult+$1000) shr 12) and $FFFFF),20,true)
+         else d1:=((tempresult+$1000) shr 12) and $FFFFF;
+         d2:=Pdword(changeptr)^ and (not ($FFFFF shl 5));
+         Pdword(changeptr)^:=d2+d1 shl 5;
+        end;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_loongarch_absolute_pcala_low_12bit) then
+      begin
+       if(tempresult and $FFF<=$7FF) then
+        begin
+         if(negative) then d1:=ld_calc_comple(-(tempresult and $FFF),12,true)
+         else d1:=tempresult and $FFF;
+         d2:=Pdword(changeptr)^ and (not ($FFF shl 10));
+         Pdword(changeptr)^:=d2+d1 shl 10;
+        end
+       else
+        begin
+         if(negative=false) then d1:=ld_calc_comple(-(($1000-tempresult) and $FFF),12,true)
+         else d1:=($1000-tempresult) and $FFF;
+         d2:=Pdword(changeptr)^ and (not ($FFF shl 10));
+         Pdword(changeptr)^:=d2+d1 shl 10;
+        end;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_loongarch_absolute_pcala64_low_20bit) then
+      begin
+       if((tempresult shr 32) and $FFFFF<=$7FFFF) then
+        begin
+         if(negative) then d1:=ld_calc_comple(-((tempresult shr 32) and $FFFFF),20,true)
+         else d1:=(tempresult shr 32) and $FFFFF;
+         d2:=Pdword(changeptr)^ and (not ($FFFFF shl 5));
+         Pdword(changeptr)^:=d2+d1 shl 5;
+        end
+       else
+        begin
+         if(negative=false) then d1:=ld_calc_comple(-(($100000-tempresult shr 32) and $FFFFF),20,true)
+         else d1:=($100000-tempresult shr 32) and $FFFFF;
+         d2:=Pdword(changeptr)^ and (not ($FFFFF shl 5));
+         Pdword(changeptr)^:=d2+d1 shl 5;
+        end;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_loongarch_absolute_pcala64_high_12bit) then
+      begin
+       if((tempresult shr 32) and $FFFFF<=$7FFFF) then
+        begin
+         if(negative) then d1:=ld_calc_comple(-((tempresult shr 52) and $FFF),12,true)
+         else d1:=(tempresult shr 52) and $FFF;
+         d2:=Pdword(changeptr)^ and (not ($FFF shl 10));
+         Pdword(changeptr)^:=d2+d1 shl 10;
+        end
+       else
+        begin
+         if(negative) then d1:=ld_calc_comple(-(($1000+tempresult shr 52) and $FFF),12,true)
+         else d1:=($1000+tempresult shr 52) and $FFF;
+         d2:=Pdword(changeptr)^ and (not ($FFF shl 10));
+         Pdword(changeptr)^:=d2+d1 shl 10;
+        end;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_loongarch_got_pc_high_20bit) then
+      begin
+       if(tempresult and $FFF<=$7FF) then
+        begin
+         if(negative) then d1:=ld_calc_comple(-((tempresult shr 12) and $FFFFF),20,true)
+         else d1:=(tempresult shr 12) and $FFFFF;
+         d2:=Pdword(changeptr)^ and (not ($FFFFF shl 5));
+         Pdword(changeptr)^:=d2+d1 shl 5;
+        end
+       else
+        begin
+         if(negative) then d1:=ld_calc_comple(-(((tempresult+$1000) shr 12) and $FFFFF),20,true)
+         else d1:=((tempresult+$1000) shr 12) and $FFFFF;
+         d2:=Pdword(changeptr)^ and (not ($FFFFF shl 5));
+         Pdword(changeptr)^:=d2+d1 shl 5;
+        end;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_loongarch_got_pc_low_12bit) then
+      begin
+       if(tempresult and $FFF<=$7FF) then
+        begin
+         if(negative) then d1:=ld_calc_comple(-(tempresult and $FFF),12,true)
+         else d1:=tempresult and $FFF;
+         d2:=Pdword(changeptr)^ and (not ($FFF shl 10));
+         Pdword(changeptr)^:=d2+d1 shl 10;
+        end
+       else
+        begin
+         if(negative=false) then d1:=ld_calc_comple(-(($1000-tempresult) and $FFF),12,true)
+         else d1:=($1000-tempresult) and $FFF;
+         d2:=Pdword(changeptr)^ and (not ($FFF shl 10));
+         Pdword(changeptr)^:=d2+d1 shl 10;
+        end;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_loongarch_got64_pc_low_20bit) then
+      begin
+       if((tempresult shr 32) and $FFFFF<=$7FFFF) then
+        begin
+         if(negative) then d1:=ld_calc_comple(-((tempresult shr 32) and $FFFFF),20,true)
+         else d1:=(tempresult shr 32) and $FFFFF;
+         d2:=Pdword(changeptr)^ and (not ($FFFFF shl 5));
+         Pdword(changeptr)^:=d2+d1 shl 5;
+        end
+       else
+        begin
+         if(negative=false) then d1:=ld_calc_comple(-((($100000-tempresult) shr 32) and $FFFFF),20,true)
+         else d1:=($100000-tempresult shr 32) and $FFFFF;
+         d2:=Pdword(changeptr)^ and (not ($FFFFF shl 5));
+         Pdword(changeptr)^:=d2+d1 shl 5;
+        end;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_loongarch_got64_pc_high_12bit) then
+      begin
+       if((tempresult shr 32) and $FFFFF<=$7FFFF) then
+        begin
+         if(negative) then d1:=ld_calc_comple(-((tempresult shr 52) and $FFF),12,true)
+         else d1:=(tempresult shr 52) and $FFF;
+         d2:=Pdword(changeptr)^ and (not ($FFF shl 10));
+         Pdword(changeptr)^:=d2+d1 shl 5;
+        end
+       else
+        begin
+         if(negative) then d1:=ld_calc_comple(-((tempresult shr 52+$1000) and $FFF),12,true)
+         else d1:=(tempresult shr 52+$1000) and $FFF;
+         d2:=Pdword(changeptr)^ and (not ($FFF shl 10));
+         Pdword(changeptr)^:=d2+d1 shl 5;
+        end;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_loongarch_got_high_20bit) then
+      begin
+       if(negative) then d1:=ld_calc_comple(-((tempresult shr 12) and $FFFFF),20,true)
+       else d1:=(tempresult shr 12) and $FFFFF;
+       d2:=Pdword(changeptr)^ and (not ($FFFFF shl 5));
+       Pdword(changeptr)^:=d2+d1 shl 5;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_loongarch_got_low_12bit) then
+      begin
+       if(negative) then d1:=ld_calc_comple(-(tempresult and $FFF),12,true)
+       else d1:=tempresult and $FFF;
+       d2:=Pdword(changeptr)^ and (not ($FFF shl 10));
+       Pdword(changeptr)^:=d2+d1 shl 10;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_loongarch_got64_low_20bit) then
+      begin
+       if(negative) then d1:=ld_calc_comple(-((tempresult shr 32) and $FFFFF),20,true)
+       else d1:=(tempresult shr 32) and $FFFFF;
+       d2:=Pdword(changeptr)^ and (not ($FFFFF shl 5));
+       Pdword(changeptr)^:=d2+d1 shl 5;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_loongarch_got64_high_12bit) then
+      begin
+       if(negative) then d1:=ld_calc_comple(-((tempresult shr 52) and $FFF),12,true)
+       else d1:=(tempresult shr 52) and $FFF;
+       d2:=Pdword(changeptr)^ and (not ($FFF shl 10));
+       Pdword(changeptr)^:=d2+d1 shl 5;
+      end
+     else if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_loongarch_32_pc_relative) then
+      begin
+       if(tempresult and $FFF<=$7FF) then
+        begin
+         if(negative) then d1:=ld_calc_comple(-((tempresult shr 12) and $FFFFF),20,true)
+         else d1:=(tempresult shr 12) and $FFFFF;
+         d2:=Pdword(changeptr)^ and (not ($FFFFF shl 5));
+         Pdword(changeptr)^:=d2+d1 shl 5;
+         if(negative) then d1:=ld_calc_comple(-(tempresult and $FFF),12,true)
+         else d1:=tempresult and $FFF;
+         d2:=Pdword(changeptr+4)^ and (not ($FFF shl 10));
+         Pdword(changeptr+4)^:=d2+d1 shl 10;
+        end
+       else
+        begin
+         if(negative) then d1:=ld_calc_comple(-(((tempresult+$1000) shr 12) and $FFFFF),20,true)
+         else d1:=((tempresult+$1000) shr 12) and $FFFFF;
+         d2:=Pdword(changeptr)^ and (not ($FFFFF shl 5));
+         Pdword(changeptr)^:=d2+d1 shl 5;
+         if(negative) then d1:=ld_calc_comple(-(($1000-tempresult) and $FFF),12,true)
+         else d1:=($1000-tempresult) and $FFF;
+         d2:=Pdword(changeptr+4)^ and (not ($FFF shl 10));
+         Pdword(changeptr+4)^:=d2+d1 shl 10;
+        end;
+      end;
+    end;
+  end;
+ {Now generate PE relocation table}
+ ld_initialize_pe_writer(writer);
+ i:=1; j:=1; baserelativeaddress:=0; baseaddresssize:=0;
+ SetLength(writer.RelocationTable,0);
+ while(i<=tempfinal.Rela.SymCount)do
+  begin
+   if(baserelativeaddress=0) or
+   (tempfinal.Rela.SymOffset[i-1]-baserelativeaddress>=4096) then
+    begin
+     baserelativeaddress:=tempfinal.Rela.SymOffset[i-1];
+     SetLength(writer.RelocationTable,length(writer.RelocationTable)+1);
+     writer.RelocationTable[length(writer.RelocationTable)-1].Block.VirtualAddress:=
+     baserelativeaddress;
+     writer.RelocationTable[length(writer.RelocationTable)-1].Block.SizeOfBlock:=8;
+     SetLength(writer.RelocationTable[length(writer.RelocationTable)-1].item,0);
+     inc(baseaddresssize,8);
+     j:=1;
+    end;
+   if(j mod (ldbit shl 1)<>0) and
+   ((j+ldbit shl 1-1) div (ldbit shl 1)*(ldbit shl 1)<>
+   length(writer.RelocationTable[length(writer.RelocationTable)-1].item)) then
+    begin
+     SetLength(writer.RelocationTable[length(writer.RelocationTable)-1].item,
+     (j+ldbit shl 1-1) div (ldbit shl 1)*(ldbit shl 1));
+     inc(baseaddresssize,(j+ldbit shl 1-1) div (ldbit shl 1)*(ldbit shl 1)-j);
+    end;
+   writer.RelocationTable[length(writer.RelocationTable)-1].item[j-1].Offset:=
+   tempfinal.Rela.SymOffset[i-1]-baserelativeaddress;
+   if(ldbit=1) then
+   writer.RelocationTable[length(writer.RelocationTable)-1].item[j-1].RelocationType:=
+   coff_image_base_relocation_highlow
+   else
+   writer.RelocationTable[length(writer.RelocationTable)-1].item[j-1].RelocationType:=
+   coff_image_base_relocation_dir64;
+   inc(writer.RelocationTable[length(writer.RelocationTable)-1].Block.SizeOfBlock,2);
+   inc(j); inc(i);
+  end;
+ if(tempfinal.Rela.SymCount=0) and (ldbit=1) then
+  begin
+   SetLength(writer.RelocationTable,length(writer.RelocationTable)+1);
+   writer.RelocationTable[length(writer.RelocationTable)-1].Block.VirtualAddress:=
+   baserelativeaddress;
+   writer.RelocationTable[length(writer.RelocationTable)-1].Block.SizeOfBlock:=12;
+   SetLength(writer.RelocationTable[length(writer.RelocationTable)-1].item,2);
+   inc(baseaddresssize,12);
+  end
+ else if(tempfinal.Rela.SymCount=0) and (ldbit=2) then
+  begin
+   SetLength(writer.RelocationTable,length(writer.RelocationTable)+1);
+   writer.RelocationTable[length(writer.RelocationTable)-1].Block.VirtualAddress:=
+   baserelativeaddress;
+   writer.RelocationTable[length(writer.RelocationTable)-1].Block.SizeOfBlock:=16;
+   SetLength(writer.RelocationTable[length(writer.RelocationTable)-1].item,4);
+   inc(baseaddresssize,16);
+  end;
+ {Get the PE Symbol Table Needed Size and generate PE Symbol Table}
+ symboltableaddr:=0; symbolstringtableptr:=0;
+ if(stripsymbol) then goto label1;
+ symbolstringtableptr:=sizeof(coff_symbol_table_item)*ldfile.SymTable.SymbolCount;
+ SetLength(symbolTable,ldfile.SymTable.SymbolCount); i:=1;
+ while(i<=ldfile.SymTable.SymbolCount)do
+  begin
+   index:=ldfile.SymTable.SymbolIndex[i-1]; j:=1;
+   while(j<=tempfinal.SecCount)do
+    begin
+     if(ldfile.SecName[index-1]=tempfinal.SecName[j-1]) then break;
+     inc(j);
+    end;
+   if(j>tempfinal.SecCount) then
+    begin
+     writeln('ERROR:Symbol Name '+ldfile.SymTable.SymbolName[i-1]+' not related to the EFI File.');
+     readln;
+     abort;
+    end;
+   startoffset:=tempfinal.SecAddress[j-1]+ldfile.SymTable.SymbolValue[i-1];
+   if(length(ldfile.SymTable.SymbolName[i-1])<=8) then
+   symboltable[i-1].Name.Name:=ldfile.SymTable.SymbolName[i-1]
+   else
+    begin
+     symboltable[i-1].Name.Reserved:=0;
+     symboltable[i-1].Name.Offset:=symbolstringtableptr;
+     inc(symbolstringtableptr,length(ldfile.SymTable.SymbolName[i-1])+1);
+    end;
+   symboltable[i-1].Address:=startoffset;
+   if(tempfinal.SecName[j-1]='.text') then
+    begin
+     symboltable[i-1].SectionNumber:=1;
+    end
+   else if(tempfinal.SecName[j-1]='.rodata') and (haverodata=true) then
+    begin
+     symboltable[i-1].SectionNumber:=2;
+    end
+   else
+    begin
+     symboltable[i-1].SectionNumber:=2+Byte(haverodata);
+    end;
+   if(ldfile.SymTable.SymbolType[i-1]=elf_symbol_type_function) then
+   symboltable[i-1].SymbolType:=coff_image_symbol_high_type_function shl 4
+   else
+   symboltable[i-1].SymbolType:=0;
+   symboltable[i-1].StorageClass:=coff_image_symbol_class_function;
+   symboltable[i-1].NumberOfAuxSymbols:=0;
+   inc(i);
+  end;
+ {Then generate PE string table for symbol table}
+ symbolstringtable:=tydq_allocmem(symbolstringtableptr-
+ sizeof(coff_symbol_table_item)*ldfile.SymTable.SymbolCount);
+ i:=1; offset1:=0;
+ while(i<=ldfile.SymTable.SymbolCount)do
+  begin
+   j:=1;
+   if(length(ldfile.SymTable.SymbolName[i-1])>8) then
+    begin
+     j:=1;
+     while(j<=length(ldfile.SymTable.SymbolName[i-1]))do
+      begin
+       (symbolstringtable+offset1-1)^:=ldfile.SymTable.SymbolName[i-1][j];
+       inc(j); inc(offset1);
+      end;
+     (symbolstringtable+offset1-1)^:=#0; inc(offset1);
+    end;
+   inc(i);
+  end;
+ {Then Get the Symbol Table Address}
+ i:=1; offset1:=0;
+ symboltableAddr:=ld_align(relocoffset+baseaddresssize,align);
+ {Get the Entry Point of PE File}
+ label1:
+ i:=1; index:=ldfile.EntryIndex;
+ while(i<=tempfinal.SecCount)do
+  begin
+   if(tempfinal.SecName[i-1]=ldfile.SecName[index-1]) then break;
+   inc(i);
+  end;
+ tempfinal.EntryAddress:=tempfinal.SecAddress[i-1]+ldfile.EntryOffset;
+ {Initialize the PE Writer}
+ writeoffset:=0;
+ writer.DosHeader.MagicNumber:='MZ';
+ writer.DosHeader.FileAddressOfNewExeHeader:=sizeof(pe_dos_header)+64;
+ tydq_move(pe_dos_stub_code,writer.DosStub,64);
+ writer.PeHeader.signature:='PE';
+ if(ldbit=1) then
+  begin
+   if(ldarch=elf_machine_386) then
+   writer.PeHeader.ImageHeader.Machine:=pe_image_file_machine_i386
+   else if(ldarch=elf_machine_arm) then
+   writer.PeHeader.ImageHeader.Machine:=pe_image_file_machine_arm
+   else if(ldarch=elf_machine_riscv) then
+   writer.PeHeader.ImageHeader.Machine:=pe_image_file_machine_riscv32
+   else if(ldarch=elf_machine_loongarch) then
+   writer.PeHeader.ImageHeader.Machine:=pe_image_file_machine_loongarch32;
+   if(stripsymbol=false) then
+    begin
+     writer.PeHeader.ImageHeader.NumberOfSymbols:=ldfile.SymTable.SymbolCount;
+     writer.PeHeader.ImageHeader.PointerToSymbolTable:=symboltableAddr;
+    end
+   else
+    begin
+     writer.PeHeader.ImageHeader.NumberOfSymbols:=0;
+     writer.PeHeader.ImageHeader.PointerToSymbolTable:=0;
+    end;
+   writer.PeHeader.ImageHeader.Characteristics:=pe_image_file_characteristics_executable_image
+   or pe_image_file_characteristics_line_number_stripped
+   or pe_image_file_characteristics_debug_stripped;
+   if(stripsymbol) then
+   writer.PeHeader.ImageHeader.Characteristics:=writer.PeHeader.ImageHeader.Characteristics or
+   pe_image_file_characteristics_symbol_stripped;
+   writer.PeHeader.ImageHeader.NumberOfSections:=3+Byte(haverodata);
+   writer.PeHeader.ImageHeader.SizeOfOptionalHeader:=sizeof(coff_optional_image_header32);
+   writer.PeHeader.OptionalHeader32.AddressOfEntryPoint:=tempfinal.EntryAddress;
+   writer.PeHeader.OptionalHeader32.BaseOfCode:=textoffset;
+   writer.PeHeader.OptionalHeader32.BaseOfData:=dataoffset;
+   if(rodataoffset<>0) then
+    begin
+     writer.PeHeader.OptionalHeader32.SizeOfCode:=rodataoffset-textoffset;
+     writer.PeHeader.OptionalHeader32.SizeOfInitializedData:=relocoffset-rodataoffset;
+     writer.PeHeader.OptionalHeader32.SizeOfUnInitializedData:=0;
+    end
+   else
+    begin
+     writer.PeHeader.OptionalHeader32.SizeOfCode:=dataoffset-textoffset;
+     writer.PeHeader.OptionalHeader32.SizeOfInitializedData:=relocoffset-dataoffset;
+     writer.PeHeader.OptionalHeader32.SizeOfUnInitializedData:=0;
+    end;
+   writer.PeHeader.OptionalHeader32.MagicNumber:=pe_image_pe32;
+   writer.PeHeader.OptionalHeader32.MajorLinkerVersion:=0;
+   writer.PeHeader.OptionalHeader32.MinorLinkerVersion:=2;
+   writer.PeHeader.OptionalHeader32.MajorImageVersion:=0;
+   writer.PeHeader.OptionalHeader32.MinorImageVersion:=2;
+   writer.PeHeader.OptionalHeader32.MajorOperatingSystemVersion:=0;
+   writer.PeHeader.OptionalHeader32.MinorOperatingSystemVersion:=0;
+   writer.PeHeader.OptionalHeader32.MajorSubSystemVersion:=0;
+   writer.PeHeader.OptionalHeader32.MinorSubSystemVersion:=0;
+   if(format=ld_format_efi_application) then
+   writer.PeHeader.OptionalHeader32.SubSystem:=pe_image_subsystem_efi_application
+   else if(format=ld_format_efi_boot_driver) then
+   writer.PeHeader.OptionalHeader32.SubSystem:=pe_image_subsystem_efi_boot_service_driver
+   else if(format=ld_format_efi_application) then
+   writer.PeHeader.OptionalHeader32.SubSystem:=pe_image_subsystem_efi_runtime_service_driver
+   else if(format=ld_format_efi_boot_driver) then
+   writer.PeHeader.OptionalHeader32.SubSystem:=pe_image_subsystem_efi_rom;
+   writer.PeHeader.OptionalHeader32.SizeOfHeapCommit:=0;
+   writer.PeHeader.OptionalHeader32.SizeOfHeapReserve:=0;
+   writer.PeHeader.OptionalHeader32.SizeOfStackCommit:=0;
+   writer.PeHeader.OptionalHeader32.SizeOfStackReserve:=0;
+   writer.PeHeader.OptionalHeader32.Win32VersionValue:=0;
+   writer.PeHeader.OptionalHeader32.ImageBase:=0;
+   writer.PeHeader.OptionalHeader32.LoaderFlags:=0;
+   writer.PeHeader.OptionalHeader32.FileAlignment:=align;
+   writer.PeHeader.OptionalHeader32.CheckSum:=0;
+   writer.PeHeader.OptionalHeader32.SizeOfHeaders:=
+   ld_align(sizeof(writer.DosHeader)+sizeof(writer.DosStub)+
+   sizeof(writer.PeHeader.signature)+sizeof(writer.PeHeader.ImageHeader)+
+   sizeof(writer.PeHeader.OptionalHeader32)+6*sizeof(pe_data_directory)
+   +(3+Byte(haverodata))*sizeof(pe_image_section_header),align);
+   if(stripsymbol=false) then
+   writer.PeHeader.OptionalHeader32.SizeOfImage:=
+   ld_align(symboltableAddr+symbolstringtableptr,align)
+   else
+   writer.PeHeader.OptionalHeader32.SizeOfImage:=
+   ld_align(relocoffset+baseaddresssize,align);
+   SetLength(writer.DataHeader,6);
+   writer.DataHeader[5].VirtualAddress:=relocoffset;
+   writer.DataHeader[5].Size:=baseaddresssize;
+   SetLength(writer.SectionHeader,3+Byte(haverodata));
+   if(haverodata) then
+    begin
+     {Generate the text section}
+     writer.SectionHeader[0].Name:='.text';
+     writer.SectionHeader[0].VirtualAddress:=textoffset;
+     writer.SectionHeader[0].VirtualSize:=rodataoffset-textoffset;
+     writer.SectionHeader[0].NumberOfLineNumbers:=0;
+     writer.SectionHeader[0].NumberOfRelocations:=0;
+     writer.SectionHeader[0].Characteristics:=pe_image_section_characteristics_memory_execute
+     or pe_image_section_characteristics_memory_read;
+     writer.SectionHeader[0].PointerToLineNumbers:=0;
+     writer.SectionHeader[0].PointerToRelocations:=0;
+     writer.SectionHeader[0].SizeOfRawData:=rodataoffset-textoffset;
+     {Generate the rodata section}
+     writer.SectionHeader[1].Name:='.rodata';
+     writer.SectionHeader[1].VirtualAddress:=rodataoffset;
+     writer.SectionHeader[1].VirtualSize:=dataoffset-rodataoffset;
+     writer.SectionHeader[1].NumberOfLineNumbers:=0;
+     writer.SectionHeader[1].NumberOfRelocations:=0;
+     writer.SectionHeader[1].Characteristics:=pe_image_section_characteristics_memory_read;
+     writer.SectionHeader[1].PointerToLineNumbers:=0;
+     writer.SectionHeader[1].PointerToRelocations:=0;
+     writer.SectionHeader[1].SizeOfRawData:=dataoffset-rodataoffset;
+     {Generate the data section}
+     writer.SectionHeader[2].Name:='.data';
+     writer.SectionHeader[2].VirtualAddress:=dataoffset;
+     writer.SectionHeader[2].VirtualSize:=relocoffset-dataoffset;
+     writer.SectionHeader[2].NumberOfLineNumbers:=0;
+     writer.SectionHeader[2].NumberOfRelocations:=0;
+     writer.SectionHeader[2].Characteristics:=pe_image_section_characteristics_memory_read
+     or pe_image_section_characteristics_memory_write;
+     writer.SectionHeader[2].PointerToLineNumbers:=0;
+     writer.SectionHeader[2].PointerToRelocations:=0;
+     writer.SectionHeader[2].SizeOfRawData:=relocoffset-dataoffset;
+     {Generate the reloc section}
+     writer.SectionHeader[3].Name:='.reloc';
+     writer.SectionHeader[3].VirtualAddress:=relocoffset;
+     writer.SectionHeader[3].VirtualSize:=baseaddresssize;
+     writer.SectionHeader[3].NumberOfLineNumbers:=0;
+     writer.SectionHeader[3].NumberOfRelocations:=0;
+     writer.SectionHeader[3].Characteristics:=pe_image_section_characteristics_memory_discardable;
+     writer.SectionHeader[3].PointerToLineNumbers:=0;
+     writer.SectionHeader[3].PointerToRelocations:=0;
+     writer.SectionHeader[3].SizeOfRawData:=baseaddresssize;
+    end
+   else
+    begin
+     {Generate the text section}
+     writer.SectionHeader[0].Name:='.text';
+     writer.SectionHeader[0].VirtualAddress:=textoffset;
+     writer.SectionHeader[0].VirtualSize:=dataoffset-textoffset;
+     writer.SectionHeader[0].NumberOfLineNumbers:=0;
+     writer.SectionHeader[0].NumberOfRelocations:=0;
+     writer.SectionHeader[0].Characteristics:=pe_image_section_characteristics_memory_execute
+     or pe_image_section_characteristics_memory_read;
+     writer.SectionHeader[0].PointerToLineNumbers:=0;
+     writer.SectionHeader[0].PointerToRelocations:=0;
+     writer.SectionHeader[0].SizeOfRawData:=dataoffset-textoffset;
+     {Generate the data section}
+     writer.SectionHeader[1].Name:='.data';
+     writer.SectionHeader[1].VirtualAddress:=dataoffset;
+     writer.SectionHeader[1].VirtualSize:=relocoffset-dataoffset;
+     writer.SectionHeader[1].NumberOfLineNumbers:=0;
+     writer.SectionHeader[1].NumberOfRelocations:=0;
+     writer.SectionHeader[1].Characteristics:=pe_image_section_characteristics_memory_read;
+     writer.SectionHeader[1].PointerToLineNumbers:=0;
+     writer.SectionHeader[1].PointerToRelocations:=0;
+     writer.SectionHeader[1].SizeOfRawData:=relocoffset-dataoffset;
+     {Generate the reloc section}
+     writer.SectionHeader[2].Name:='.reloc';
+     writer.SectionHeader[2].VirtualAddress:=relocoffset;
+     writer.SectionHeader[2].VirtualSize:=baseaddresssize;
+     writer.SectionHeader[2].NumberOfLineNumbers:=0;
+     writer.SectionHeader[2].NumberOfRelocations:=0;
+     writer.SectionHeader[2].Characteristics:=pe_image_section_characteristics_memory_discardable;
+     writer.SectionHeader[2].PointerToLineNumbers:=0;
+     writer.SectionHeader[2].PointerToRelocations:=0;
+     writer.SectionHeader[2].SizeOfRawData:=baseaddresssize;
+    end;
+   pebinary:=tydq_allocmem(writer.PeHeader.OptionalHeader32.SizeOfImage);
+   pesize:=writer.PeHeader.OptionalHeader32.SizeOfImage;
+   writeoffset:=0;
+   tydq_move(writer.DosHeader,pebinary^,sizeof(writer.DosHeader));
+   inc(writeoffset,sizeof(writer.DosHeader));
+   tydq_move(writer.DosStub,(pebinary+writeoffset)^,sizeof(writer.DosStub));
+   inc(writeoffset,sizeof(writer.DosStub));
+   tydq_move(writer.PeHeader.signature,(pebinary+writeoffset)^,sizeof(writer.PeHeader.signature));
+   inc(writeoffset,sizeof(writer.PeHeader.signature));
+   tydq_move(writer.PeHeader.ImageHeader,(pebinary+writeoffset)^,sizeof(writer.PeHeader.ImageHeader));
+   inc(writeoffset,sizeof(writer.PeHeader.ImageHeader));
+   checksumoffset:=writeoffset;
+   tydq_move(writer.PeHeader.OptionalHeader32,(pebinary+writeoffset)^,
+   sizeof(writer.PeHeader.OptionalHeader32));
+   inc(writeoffset,sizeof(writer.PeHeader.OptionalHeader32));
+   tydq_move(writer.DataHeader[0],(pebinary+writeoffset)^,sizeof(pe_data_directory)*6);
+   inc(writeoffset,sizeof(pe_data_directory)*6);
+   tydq_move(writer.SectionHeader[0],(pebinary+writeoffset)^,sizeof(pe_image_section_header)*
+   (3+Byte(haverodata)));
+   inc(writeoffset,sizeof(pe_image_section_header)*(3+Byte(haverodata)));
+  end
+ else if(ldbit=2) then
+  begin
+   if(ldarch=elf_machine_386) then
+   writer.PeHeader.ImageHeader.Machine:=pe_image_file_machine_i386
+   else if(ldarch=elf_machine_arm) then
+   writer.PeHeader.ImageHeader.Machine:=pe_image_file_machine_arm
+   else if(ldarch=elf_machine_riscv) then
+   writer.PeHeader.ImageHeader.Machine:=pe_image_file_machine_riscv64
+   else if(ldarch=elf_machine_loongarch) then
+   writer.PeHeader.ImageHeader.Machine:=pe_image_file_machine_loongarch64;
+   if(stripsymbol=false) then
+    begin
+     writer.PeHeader.ImageHeader.NumberOfSymbols:=ldfile.SymTable.SymbolCount;
+     writer.PeHeader.ImageHeader.PointerToSymbolTable:=symboltableAddr;
+    end
+   else
+    begin
+     writer.PeHeader.ImageHeader.NumberOfSymbols:=0;
+     writer.PeHeader.ImageHeader.PointerToSymbolTable:=0;
+    end;
+   writer.PeHeader.ImageHeader.Characteristics:=pe_image_file_characteristics_executable_image
+   or pe_image_file_characteristics_line_number_stripped
+   or pe_image_file_characteristics_debug_stripped;
+   if(stripsymbol) then
+   writer.PeHeader.ImageHeader.Characteristics:=writer.PeHeader.ImageHeader.Characteristics or
+   pe_image_file_characteristics_symbol_stripped;
+   writer.PeHeader.ImageHeader.NumberOfSections:=3+Byte(haverodata);
+   writer.PeHeader.ImageHeader.SizeOfOptionalHeader:=sizeof(coff_optional_image_header64);
+   writer.PeHeader.OptionalHeader64.AddressOfEntryPoint:=tempfinal.EntryAddress;
+   writer.PeHeader.OptionalHeader64.BaseOfCode:=textoffset;
+   if(rodataoffset<>0) then
+    begin
+     writer.PeHeader.OptionalHeader64.SizeOfCode:=rodataoffset-textoffset;
+     writer.PeHeader.OptionalHeader64.SizeOfInitializedData:=relocoffset-rodataoffset;
+     writer.PeHeader.OptionalHeader64.SizeOfUnInitializedData:=0;
+    end
+   else
+    begin
+     writer.PeHeader.OptionalHeader64.SizeOfCode:=dataoffset-textoffset;
+     writer.PeHeader.OptionalHeader64.SizeOfInitializedData:=relocoffset-dataoffset;
+     writer.PeHeader.OptionalHeader64.SizeOfUnInitializedData:=0;
+    end;
+   writer.PeHeader.OptionalHeader64.MagicNumber:=pe_image_pe32plus;
+   writer.PeHeader.OptionalHeader64.MajorLinkerVersion:=0;
+   writer.PeHeader.OptionalHeader64.MinorLinkerVersion:=2;
+   writer.PeHeader.OptionalHeader64.MajorImageVersion:=0;
+   writer.PeHeader.OptionalHeader64.MinorImageVersion:=2;
+   writer.PeHeader.OptionalHeader64.MajorOperatingSystemVersion:=0;
+   writer.PeHeader.OptionalHeader64.MinorOperatingSystemVersion:=0;
+   writer.PeHeader.OptionalHeader64.MajorSubSystemVersion:=0;
+   writer.PeHeader.OptionalHeader64.MinorSubSystemVersion:=0;
+   if(format=ld_format_efi_application) then
+   writer.PeHeader.OptionalHeader64.SubSystem:=pe_image_subsystem_efi_application
+   else if(format=ld_format_efi_boot_driver) then
+   writer.PeHeader.OptionalHeader64.SubSystem:=pe_image_subsystem_efi_boot_service_driver
+   else if(format=ld_format_efi_application) then
+   writer.PeHeader.OptionalHeader64.SubSystem:=pe_image_subsystem_efi_runtime_service_driver
+   else if(format=ld_format_efi_boot_driver) then
+   writer.PeHeader.OptionalHeader64.SubSystem:=pe_image_subsystem_efi_rom;
+   writer.PeHeader.OptionalHeader64.SizeOfHeapCommit:=0;
+   writer.PeHeader.OptionalHeader64.SizeOfHeapReserve:=0;
+   writer.PeHeader.OptionalHeader64.SizeOfStackCommit:=0;
+   writer.PeHeader.OptionalHeader64.SizeOfStackReserve:=0;
+   writer.PeHeader.OptionalHeader64.Win32VersionValue:=0;
+   writer.PeHeader.OptionalHeader64.ImageBase:=0;
+   writer.PeHeader.OptionalHeader64.LoaderFlags:=0;
+   writer.PeHeader.OptionalHeader64.FileAlignment:=align;
+   writer.PeHeader.OptionalHeader64.CheckSum:=0;
+   writer.PeHeader.OptionalHeader64.SizeOfHeaders:=
+   ld_align(sizeof(writer.DosHeader)+sizeof(writer.DosStub)+
+   sizeof(writer.PeHeader.signature)+sizeof(writer.PeHeader.ImageHeader)+
+   sizeof(writer.PeHeader.OptionalHeader64)+6*sizeof(pe_data_directory)
+   +(3+Byte(haverodata))*sizeof(pe_image_section_header),align);
+   if(stripsymbol=false) then
+   writer.PeHeader.OptionalHeader64.SizeOfImage:=
+   ld_align(symboltableAddr+symbolstringtableptr,align)
+   else
+   writer.PeHeader.OptionalHeader64.SizeOfImage:=
+   ld_align(relocoffset+baseaddresssize,align);
+   SetLength(writer.DataHeader,6);
+   writer.DataHeader[5].VirtualAddress:=relocoffset;
+   writer.DataHeader[5].Size:=baseaddresssize;
+   SetLength(writer.SectionHeader,3+Byte(haverodata));
+   if(haverodata) then
+    begin
+     {Generate the text section}
+     writer.SectionHeader[0].Name:='.text';
+     writer.SectionHeader[0].VirtualAddress:=textoffset;
+     writer.SectionHeader[0].VirtualSize:=rodataoffset-textoffset;
+     writer.SectionHeader[0].NumberOfLineNumbers:=0;
+     writer.SectionHeader[0].NumberOfRelocations:=0;
+     writer.SectionHeader[0].Characteristics:=pe_image_section_characteristics_memory_execute
+     or pe_image_section_characteristics_memory_read;
+     writer.SectionHeader[0].PointerToLineNumbers:=0;
+     writer.SectionHeader[0].PointerToRelocations:=0;
+     writer.SectionHeader[0].SizeOfRawData:=rodataoffset-textoffset;
+     {Generate the rodata section}
+     writer.SectionHeader[1].Name:='.rodata';
+     writer.SectionHeader[1].VirtualAddress:=rodataoffset;
+     writer.SectionHeader[1].VirtualSize:=dataoffset-rodataoffset;
+     writer.SectionHeader[1].NumberOfLineNumbers:=0;
+     writer.SectionHeader[1].NumberOfRelocations:=0;
+     writer.SectionHeader[1].Characteristics:=pe_image_section_characteristics_memory_read;
+     writer.SectionHeader[1].PointerToLineNumbers:=0;
+     writer.SectionHeader[1].PointerToRelocations:=0;
+     writer.SectionHeader[1].SizeOfRawData:=dataoffset-rodataoffset;
+     {Generate the data section}
+     writer.SectionHeader[2].Name:='.data';
+     writer.SectionHeader[2].VirtualAddress:=dataoffset;
+     writer.SectionHeader[2].VirtualSize:=relocoffset-dataoffset;
+     writer.SectionHeader[2].NumberOfLineNumbers:=0;
+     writer.SectionHeader[2].NumberOfRelocations:=0;
+     writer.SectionHeader[2].Characteristics:=pe_image_section_characteristics_memory_read
+     or pe_image_section_characteristics_memory_write;
+     writer.SectionHeader[2].PointerToLineNumbers:=0;
+     writer.SectionHeader[2].PointerToRelocations:=0;
+     writer.SectionHeader[2].SizeOfRawData:=relocoffset-dataoffset;
+     {Generate the reloc section}
+     writer.SectionHeader[3].Name:='.reloc';
+     writer.SectionHeader[3].VirtualAddress:=relocoffset;
+     writer.SectionHeader[3].VirtualSize:=baseaddresssize;
+     writer.SectionHeader[3].NumberOfLineNumbers:=0;
+     writer.SectionHeader[3].NumberOfRelocations:=0;
+     writer.SectionHeader[3].Characteristics:=pe_image_section_characteristics_memory_discardable;
+     writer.SectionHeader[3].PointerToLineNumbers:=0;
+     writer.SectionHeader[3].PointerToRelocations:=0;
+     writer.SectionHeader[3].SizeOfRawData:=baseaddresssize;
+    end
+   else
+    begin
+     {Generate the text section}
+     writer.SectionHeader[0].Name:='.text';
+     writer.SectionHeader[0].VirtualAddress:=textoffset;
+     writer.SectionHeader[0].VirtualSize:=dataoffset-textoffset;
+     writer.SectionHeader[0].NumberOfLineNumbers:=0;
+     writer.SectionHeader[0].NumberOfRelocations:=0;
+     writer.SectionHeader[0].Characteristics:=pe_image_section_characteristics_memory_execute
+     or pe_image_section_characteristics_memory_read;
+     writer.SectionHeader[0].PointerToLineNumbers:=0;
+     writer.SectionHeader[0].PointerToRelocations:=0;
+     writer.SectionHeader[0].SizeOfRawData:=dataoffset-textoffset;
+     {Generate the data section}
+     writer.SectionHeader[1].Name:='.data';
+     writer.SectionHeader[1].VirtualAddress:=dataoffset;
+     writer.SectionHeader[1].VirtualSize:=relocoffset-dataoffset;
+     writer.SectionHeader[1].NumberOfLineNumbers:=0;
+     writer.SectionHeader[1].NumberOfRelocations:=0;
+     writer.SectionHeader[1].Characteristics:=pe_image_section_characteristics_memory_read;
+     writer.SectionHeader[1].PointerToLineNumbers:=0;
+     writer.SectionHeader[1].PointerToRelocations:=0;
+     writer.SectionHeader[1].SizeOfRawData:=relocoffset-dataoffset;
+     {Generate the reloc section}
+     writer.SectionHeader[2].Name:='.reloc';
+     writer.SectionHeader[2].VirtualAddress:=relocoffset;
+     writer.SectionHeader[2].VirtualSize:=baseaddresssize;
+     writer.SectionHeader[2].NumberOfLineNumbers:=0;
+     writer.SectionHeader[2].NumberOfRelocations:=0;
+     writer.SectionHeader[2].Characteristics:=pe_image_section_characteristics_memory_discardable;
+     writer.SectionHeader[2].PointerToLineNumbers:=0;
+     writer.SectionHeader[2].PointerToRelocations:=0;
+     writer.SectionHeader[2].SizeOfRawData:=baseaddresssize;
+    end;
+   pebinary:=tydq_allocmem(writer.PeHeader.OptionalHeader64.SizeOfImage);
+   pesize:=writer.PeHeader.OptionalHeader64.SizeOfImage;
+   writeoffset:=0;
+   tydq_move(writer.DosHeader,pebinary^,sizeof(writer.DosHeader));
+   inc(writeoffset,sizeof(writer.DosHeader));
+   tydq_move(writer.DosStub,(pebinary+writeoffset)^,sizeof(writer.DosStub));
+   inc(writeoffset,sizeof(writer.DosStub));
+   tydq_move(writer.PeHeader.signature,(pebinary+writeoffset)^,sizeof(writer.PeHeader.signature));
+   inc(writeoffset,sizeof(writer.PeHeader.signature));
+   tydq_move(writer.PeHeader.ImageHeader,(pebinary+writeoffset)^,sizeof(writer.PeHeader.ImageHeader));
+   inc(writeoffset,sizeof(writer.PeHeader.ImageHeader));
+   checksumoffset:=writeoffset;
+   tydq_move(writer.PeHeader.OptionalHeader64,(pebinary+writeoffset)^,
+   sizeof(writer.PeHeader.OptionalHeader64));
+   inc(writeoffset,sizeof(writer.PeHeader.OptionalHeader64));
+   tydq_move(writer.DataHeader[0],(pebinary+writeoffset)^,sizeof(pe_data_directory)*6);
+   inc(writeoffset,sizeof(pe_data_directory)*6);
+   tydq_move(writer.SectionHeader[0],(pebinary+writeoffset)^,sizeof(pe_image_section_header)*
+   (3+Byte(haverodata)));
+   inc(writeoffset,sizeof(pe_image_section_header)*(3+Byte(haverodata)));
+  end;
+ {Then Move the content of PE to file}
+ i:=1; writeoffset:=0;
+ while(i<=tempfinal.SecCount)do
+  begin
+   writeoffset:=tempfinal.SecAddress[i-1];
+   if(tempfinal.SecContent[i-1]<>nil) then
+   tydq_move(tempfinal.SecContent[i-1]^,(pebinary+writeoffset)^,tempfinal.SecSize[i-1]);
+   inc(i);
+  end;
+ {Move the relocation content of PE to file}
+ i:=1; j:=1;
+ writeoffset:=writer.SectionHeader[length(writer.SectionHeader)-1].VirtualAddress;
+ for i:=1 to length(writer.RelocationTable) do
+  begin
+   tydq_move(writer.RelocationTable[i-1].Block,(pebinary+writeoffset)^,8);
+   inc(writeoffset,8);
+   for j:=1 to length(writer.RelocationTable[i-1].item) do
+    begin
+     tydq_move(writer.RelocationTable[i-1].Item[j-1],(pebinary+writeoffset)^,8);
+     inc(writeoffset,2);
+    end;
+  end;
+ {If symbol table not stripped,Move the symbol content of PE to file}
+ i:=1; j:=1;
+ writeoffset:=symboltableAddr;
+ tydq_move(symboltable[0],(pebinary+writeoffset)^,length(symboltable)*sizeof(coff_symbol_table_item));
+ inc(writeoffset,length(symboltable)*sizeof(coff_symbol_table_item));
+ tydq_move(symbolstringtable^,(pebinary+writeoffset)^,symbolstringtableptr-
+ sizeof(coff_symbol_table_item)*ldfile.SymTable.SymbolCount);
+ writeoffset:=checksumoffset;
+ if(ldbit=1) then
+  begin
+   writer.PeHeader.OptionalHeader32.CheckSum:=pe_calculate_checksum(pebinary,pesize);
+   tydq_move(writer.PeHeader.OptionalHeader32,(pebinary+writeoffset)^,
+   sizeof(writer.PeHeader.OptionalHeader32));
+  end
+ else if(ldbit=2) then
+  begin
+   writer.PeHeader.OptionalHeader64.CheckSum:=pe_calculate_checksum(pebinary,pesize);
+   tydq_move(writer.PeHeader.OptionalHeader64,(pebinary+writeoffset)^,
+   sizeof(writer.PeHeader.OptionalHeader64));
+  end;
+ DeleteFile(fn);
+ ld_io_write(fn,1,pebinary^,pesize);
 end;
 
 end.

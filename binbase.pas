@@ -408,6 +408,149 @@ type elf32_address=dword;
                              ArchiveFileMagic:array[1..2] of char;
                              end;
      Pelf_archive_file_header=^elf_archive_file_header;
+     {PE DOS Header}
+     pe_dos_header=packed record
+                   MagicNumber:array[1..2] of char;
+                   BytesOnLastPageOfFile:word;
+                   PagesInFile:word;
+                   Relocation:word;
+                   SizeOfHeaderInParagraphs:word;
+                   MinimumExtraParagraphsNeeded:word;
+                   InitialRelativeSSValue:word;
+                   InitialSPValue:word;
+                   Checksum:word;
+                   InitialIPValue:word;
+                   InitialRelativeCSValue:word;
+                   FileAddressOfRelocationTable:word;
+                   OverlayNumber:word;
+                   ReservedWords:array[1..4] of word;
+                   OemId:word;
+                   OemInformation:word;
+                   ReservedWords2:array[1..10] of word;
+                   FileAddressOfNewExeHeader:word;
+                   end;
+     Ppe_dos_header=^pe_dos_header;
+     {PE/COFF Image Headers}
+     coff_image_header=packed record
+                       Machine:word;
+                       NumberOfSections:word;
+                       TimeDateStamp:dword;
+                       PointerToSymbolTable:dword;
+                       NumberOfSymbols:dword;
+                       SizeOfOptionalHeader:word;
+                       Characteristics:word;
+                       end;
+     coff_optional_image_header32=packed record
+                                  MagicNumber:word;
+                                  MajorLinkerVersion:byte;
+                                  MinorLinkerVersion:byte;
+                                  SizeOfCode:dword;
+                                  SizeOfInitializedData:dword;
+                                  SizeOfUnInitializedData:dword;
+                                  AddressOfEntryPoint:dword;
+                                  BaseOfCode:dword;
+                                  BaseOfData:dword;
+                                  ImageBase:dword;
+                                  SectionAlignment:dword;
+                                  FileAlignment:dword;
+                                  MajorOperatingSystemVersion:word;
+                                  MinorOperatingSystemVersion:word;
+                                  MajorImageVersion:word;
+                                  MinorImageVersion:word;
+                                  MajorSubSystemVersion:word;
+                                  MinorSubSystemVersion:word;
+                                  Win32VersionValue:dword;
+                                  SizeOfImage:dword;
+                                  SizeOfHeaders:dword;
+                                  CheckSum:dword;
+                                  SubSystem:word;
+                                  SizeOfStackReserve:dword;
+                                  SizeOfStackCommit:dword;
+                                  SizeOfHeapReserve:dword;
+                                  SizeOfHeapCommit:dword;
+                                  LoaderFlags:dword;
+                                  NumberOfRvaAndSizes:dword;
+                                  end;
+     coff_optional_image_header64=packed record
+                                  MagicNumber:word;
+                                  MajorLinkerVersion:byte;
+                                  MinorLinkerVersion:byte;
+                                  SizeOfCode:dword;
+                                  SizeOfInitializedData:dword;
+                                  SizeOfUnInitializedData:dword;
+                                  AddressOfEntryPoint:dword;
+                                  BaseOfCode:dword;
+                                  ImageBase:qword;
+                                  SectionAlignment:dword;
+                                  FileAlignment:dword;
+                                  MajorOperatingSystemVersion:word;
+                                  MinorOperatingSystemVersion:word;
+                                  MajorImageVersion:word;
+                                  MinorImageVersion:word;
+                                  MajorSubSystemVersion:word;
+                                  MinorSubSystemVersion:word;
+                                  Win32VersionValue:dword;
+                                  SizeOfImage:dword;
+                                  SizeOfHeaders:dword;
+                                  CheckSum:dword;
+                                  SubSystem:word;
+                                  SizeOfStackReserve:qword;
+                                  SizeOfStackCommit:qword;
+                                  SizeOfHeapReserve:qword;
+                                  SizeOfHeapCommit:qword;
+                                  LoaderFlags:dword;
+                                  NumberOfRvaAndSizes:dword;
+                                  end;
+     {PE Image Data Directory}
+     pe_data_directory=packed record
+                       VirtualAddress:Dword;
+                       Size:dword;
+                       end;
+     Ppe_data_directory=^pe_data_directory;
+     pe_image_header=packed record
+                     signature:array[1..4] of char;
+                     ImageHeader:coff_image_header;
+                     case Boolean of
+                     False:(OptionalHeader32:coff_optional_image_header32;);
+                     True:(OptionalHeader64:coff_optional_image_header64;);
+                     end;
+     {PE Section Header}
+     pe_image_section_header=packed record
+                             Name:array[1..8] of char;
+                             VirtualSize:dword;
+                             VirtualAddress:dword;
+                             SizeOfRawData:dword;
+                             PointerToRawData:dword;
+                             PointerToRelocations:dword;
+                             PointerToLineNumbers:dword;
+                             NumberOfRelocations:dword;
+                             NumberOfLineNumbers:dword;
+                             Characteristics:dword;
+                             end;
+     Ppe_image_section_header=^pe_image_section_header;
+     {PE Relocation Block}
+     pe_image_base_relocation_block=packed record
+                                    VirtualAddress:dword;
+                                    SizeOfBlock:dword;
+                                    end;
+     pe_image_base_relocation_item=bitpacked record
+                                   Offset:0..4095;
+                                   RelocationType:0..15;
+                                   end;
+     {Coff Symbol Table}
+     coff_symbol_table_name=packed record
+                            case Boolean of
+                            True:(Name:array[1..8] of char;);
+                            False:(Reserved:dword;Offset:dword;);
+                            end;
+     coff_symbol_table_item=packed record
+                            Name:coff_symbol_table_name;
+                            Address:dword;
+                            SectionNumber:smallint;
+                            SymbolType:word;
+                            StorageClass:byte;
+                            NumberOfAuxSymbols:byte;
+                            end;
 
       {ELF Magic Number in ELF ID(From Byte 0 to Byte 3)}
 const elf_magic:array[1..4] of char=(#$7F,'E','L','F');
@@ -1422,6 +1565,140 @@ const elf_magic:array[1..4] of char=(#$7F,'E','L','F');
       {ELF Archive File Type}
       elf_archive_magic:PChar='!<arch>'#10;
       elf_archive_file_magic:PChar='`'#10;
+      {PE DOS Stub code}
+      pe_dos_stub_code:array[1..64] of byte=($0E,$1F,$BA,$0E,$00,$B4,$09,$CD,$21,
+      $B8,$01,$4C,$CD,$21,$54,$68,$69,$73,$20,$70,$72,$6F,$67,$72,$61,$6D,$20,$63,$61,$6E,$6E,$6F,
+      $74,$20,$62,$65,$20,$72,$75,$6E,$20,$69,$6E,$20,$44,$4F,$53,$20,$6D,$6F,$64,$65,$2E,$0D,
+      $0D,$0A,$24,$00,$00,$00,$00,$00,$00,$00);
+      {PE Image Header File Machine}
+      pe_image_file_machine_amd64:word=$8664;
+      pe_image_file_machine_arm:word=$1C0;
+      pe_image_file_machine_arm64:word=$AA64;
+      pe_image_file_machine_arm_thumb:word=$1C2;
+      pe_image_file_machine_i386:word=$14C;
+      pe_image_file_machine_ia64:word=$200;
+      pe_image_file_machine_loongarch32:word=$6232;
+      pe_image_file_machine_loongarch64:word=$6264;
+      pe_image_file_machine_riscv32:word=$5032;
+      pe_image_file_machine_riscv64:word=$5064;
+      pe_image_file_machine_riscv128:word=$5128;
+      {PE Image Header File Characteristics}
+      pe_image_file_characteristics_relocs_stripped:word=$0001;
+      pe_image_file_characteristics_executable_image:word=$0002;
+      pe_image_file_characteristics_line_number_stripped:word=$0004;
+      pe_image_file_characteristics_symbol_stripped:word=$0008;
+      pe_image_file_characteristics_large_address_aware:word=$0020;
+      pe_image_file_characteristics_32bit_machine:word=$0100;
+      pe_image_file_characteristics_debug_stripped:word=$0200;
+      pe_image_file_characteristics_removeable_run_from_swap:word=$0400;
+      pe_image_file_characteristics_net_run_from_swap:word=$0800;
+      pe_image_file_characteristics_system:word=$1000;
+      pe_image_file_characteristics_dll:word=$2000;
+      pe_image_file_characteristics_system_only:word=$4000;
+      {PE Image Header Subsystem}
+      pe_image_subsystem_unknown:word=0;
+      pe_image_subsystem_native:word=1;
+      pe_image_subsystem_windows_gui:word=2;
+      pe_image_subsystem_windows_cui:word=3;
+      pe_image_subsystem_os2_cui:word=5;
+      pe_image_subsystem_posix_cui:word=7;
+      pe_image_subsystem_native_windows:word=8;
+      pe_image_subsystem_windows_ce_gui:word=9;
+      pe_image_subsystem_efi_application:word=10;
+      pe_image_subsystem_efi_boot_service_driver:word=11;
+      pe_image_subsystem_efi_runtime_service_driver:word=12;
+      pe_image_subsystem_efi_rom:word=13;
+      pe_image_subsystem_xbox:word=14;
+      pe_image_subsystem_windows_boot_application:word=15;
+      {PE Image Header DLL Characteristics}
+      pe_image_dll_characteristics_high_entropy_virtual_address:word=$0020;
+      pe_image_dll_characteristics_dynamic_base:word=$0040;
+      pe_image_dll_characteristics_force_integrity:word=$0080;
+      pe_image_dll_characteristics_nx_compat:word=$0100;
+      pe_image_dll_characteristics_no_isolation:word=$0200;
+      pe_image_dll_characteristics_no_structural_exception:word=$0400;
+      pe_image_dll_characteristics_no_bind:word=$0800;
+      pe_image_dll_characteristics_application_container:word=$1000;
+      pe_image_dll_characteristics_wdm_driver:word=$2000;
+      pe_image_dll_characteristics_guard_console:word=$4000;
+      pe_image_dll_characteristics_terminal_service_aware:word=$8000;
+      {PE Image Header Magic Number}
+      pe_image_pe32:word=$10B;
+      pe_image_pe32plus:word=$20B;
+      pe_image_rom:word=$107;
+      {PE Image Section Header Signals}
+      pe_image_section_characteristics_type_no_pad:dword=$00000008;
+      pe_image_section_characteristics_type_code:dword=$00000020;
+      pe_image_section_characteristics_initialized_data:dword=$00000040;
+      pe_image_section_characteristics_uninitialized_data:dword=$00000080;
+      pe_image_section_characteristics_gprel:dword=$00008000;
+      pe_image_section_characteristics_memory_discardable:dword=$02000000;
+      pe_image_section_characteristics_memory_not_cached:dword=$04000000;
+      pe_image_section_characteristics_memory_not_paged:dword=$08000000;
+      pe_image_section_characteristics_memory_shared:dword=$10000000;
+      pe_image_section_characteristics_memory_execute:dword=$20000000;
+      pe_image_section_characteristics_memory_read:dword=$40000000;
+      pe_image_section_characteristics_memory_write:dword=$80000000;
+      {Coff Symbol Table Index}
+      coff_image_symbol_undefined:smallint=0;
+      coff_image_symbol_absolute:smallint=-1;
+      coff_image_symbol_debug:smallint=-2;
+      {Coff Symbol Type Low}
+      coff_image_symbol_type_null:byte=0;
+      coff_image_symbol_type_void:byte=1;
+      coff_image_symbol_type_char:byte=2;
+      coff_image_symbol_type_short:byte=3;
+      coff_image_symbol_type_int:byte=4;
+      coff_image_symbol_type_long:byte=5;
+      coff_image_symbol_type_float:byte=6;
+      coff_image_symbol_type_double:byte=7;
+      coff_image_symbol_type_struct:byte=8;
+      coff_image_symbol_type_union:byte=9;
+      coff_image_symbol_type_enum:byte=10;
+      coff_image_symbol_type_moe:byte=11;
+      coff_image_symbol_type_byte:byte=12;
+      coff_image_symbol_type_word:byte=13;
+      coff_image_symbol_type_uint:byte=14;
+      coff_image_symbol_type_dword:byte=15;
+      {Coff Symbol Type High}
+      coff_image_symbol_high_type_null:byte=0;
+      coff_image_symbol_high_type_pointer:byte=1;
+      coff_image_symbol_high_type_function:byte=2;
+      coff_image_symbol_high_type_array:byte=3;
+      {Coff Storage Class}
+      coff_image_symbol_class_end_of_function:byte=$FF;
+      coff_image_symbol_class_null:byte=0;
+      coff_image_symbol_class_automatic:byte=1;
+      coff_image_symbol_class_external:byte=2;
+      coff_image_symbol_class_static:byte=3;
+      coff_image_symbol_class_register:byte=4;
+      coff_image_symbol_class_external_define_symbol:byte=5;
+      coff_image_symbol_class_label:byte=6;
+      coff_image_symbol_class_undefined_label:byte=7;
+      coff_image_symbol_class_member_of_struct:byte=8;
+      coff_image_symbol_class_argument:byte=9;
+      coff_image_symbol_class_struct_tag:byte=10;
+      coff_image_symbol_class_member_of_union:byte=11;
+      coff_image_symbol_class_union_tag:byte=12;
+      coff_image_symbol_class_type_definition:byte=13;
+      coff_image_symbol_class_undefined_static:byte=14;
+      coff_image_symbol_class_enum_tag:byte=15;
+      coff_image_symbol_class_member_of_enum:byte=16;
+      coff_image_symbol_class_register_param:byte=17;
+      coff_image_symbol_class_bit_field:byte=18;
+      coff_image_symbol_class_block:byte=100;
+      coff_image_symbol_class_function:byte=101;
+      coff_image_symbol_class_end_of_struct:byte=102;
+      coff_image_symbol_class_section:byte=103;
+      coff_image_symbol_class_weak_external:byte=104;
+      coff_image_symbol_class_clr_token:byte=105;
+      {Coff Image Base Relocation Type}
+      coff_image_base_relocation_absolute:byte=0;
+      coff_image_base_relocation_high:byte=1;
+      coff_image_base_relocation_low:byte=2;
+      coff_image_base_relocation_highlow:byte=3;
+      coff_image_base_relocation_high_adjust:byte=4;
+      coff_image_base_relocation_dir64:byte=10;
 
 function elf_symbol_type_bind(val:byte):byte;
 function elf_symbol_type_type(val:byte):byte;
@@ -1445,6 +1722,7 @@ function elf_get_endian(id:elf_file_id):byte;
 function elf_get_os_abi(id:elf_file_id):byte;
 function elf_get_name(strtab:PChar;index:Dword):PChar;
 function elf_hash(name:PChar):Dword;
+function pe_calculate_checksum(data:Pointer;datasize:Dword):Dword;
 
 implementation
 
@@ -1555,6 +1833,23 @@ begin
    inc(tempname);
   end;
  elf_hash:=hash and $7FFFFFFF;
+end;
+function pe_calculate_checksum(data:Pointer;datasize:Dword):Dword;
+var sum,checksum:dword;
+    i:dword;
+begin
+ if(datasize=0) or (data=nil) then exit(0)
+ else
+  begin
+   sum:=0; checksum:=0; i:=1;
+   while(i<=datasize)do
+    begin
+     sum:=Pword(data+i shl 1-2)^+checksum;
+     checksum:=Word(sum)+sum shr 16;
+     inc(i,2);
+    end;
+   pe_calculate_checksum:=checksum+datasize;
+  end;
 end;
 
 end.
