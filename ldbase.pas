@@ -9535,10 +9535,8 @@ var tempfinal:ld_object_file_final;
     i,j,k,m,n:Natuint;
     partoffset:Natuint;
     tempformula:ld_formula;
-    tempnum:Natuint;
     writeindex:word;
     writepos:array[1..2] of Natuint;
-    strsize:Natuint;
     order:array of string;
     startoffset,compareoffset,endoffset:Natuint;
     changeptr:Pointer;
@@ -9564,14 +9562,16 @@ var tempfinal:ld_object_file_final;
     symboltable:array of coff_symbol_table_item;
     symbolstringtable:PChar;
     symbolstringtableptr:Natuint;
+    symbolandstringtablesize:Natuint;
     writer:ld_pe_writer;
     {For non-x64 architecture}
     tempnum1,tempnum2,tempnum3,tempnum4:Natint;
-    gotindex,gotpltindex:word;
+    tempnum5:Dword;
+    gotindex:word;
     movesecoffset,movesecoffset2:Natint;
     tempresult2:Natint;
     tempindex,tempindex2,tempindex3,tempindex4:Word;
-    offset1,offset2:Natuint;
+    offset1:Natuint;
     {Set the fixed length instruction data}
     d1,d2,d3,d4,d5,d6,d7,d8,d9,d10:dword;
     q1,q2:qword;
@@ -9902,16 +9902,6 @@ begin
          inc(j);
         end;
        if(j>length(tempfinal.GotSymbol)) then offset1:=j else offset1:=0;
-       j:=1;
-       while(j<=length(tempfinal.GotPltSymbol))do
-        begin
-         if(ldfile.Adjust.DestName[i-1]=tempfinal.GotPltSymbol[j-1]) then
-          begin
-           writepos[2]:=2+j; break;
-          end;
-         inc(j);
-        end;
-       if(j>length(tempfinal.GotPltSymbol)) then offset2:=length(tempfinal.GotSymbol)+j else offset2:=0;
       end;
      endoffset:=tempfinal.SecAddress[j-1]+ldfile.Adjust.DestOffset[i-1];
      isexternal:=false;
@@ -9927,16 +9917,6 @@ begin
          inc(j);
         end;
        if(j<=length(tempfinal.GotSymbol)) then offset1:=j else offset1:=0;
-       j:=1;
-       while(j<=length(tempfinal.GotPltSymbol))do
-        begin
-         if(ldfile.Adjust.DestName[i-1]=tempfinal.GotPltSymbol[j-1]) then
-          begin
-           writepos[2]:=2+j; isexternal:=true; break;
-          end;
-         inc(j);
-        end;
-       if(j<=length(tempfinal.GotPltSymbol)) then offset2:=length(tempfinal.GotSymbol)+j else offset2:=0;
       end;
      if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_aarch64_adrp_page_rel_bit32_12)
      or(ldfile.Adjust.AdjustType[i-1]=elf_reloc_aarch64_adrp_page_rel_bit32_12_no_check)
@@ -10934,16 +10914,6 @@ begin
          inc(j);
         end;
        if(j>length(tempfinal.GotSymbol)) then offset1:=j else offset1:=0;
-       j:=1;
-       while(j<=length(tempfinal.GotPltSymbol))do
-        begin
-         if(ldfile.Adjust.DestName[i-1]=tempfinal.GotPltSymbol[j-1]) then
-          begin
-           writepos[2]:=2+j; break;
-          end;
-         inc(j);
-        end;
-       if(j>length(tempfinal.GotPltSymbol)) then offset2:=length(tempfinal.GotSymbol)+j else offset2:=0;
       end;
      endoffset:=tempfinal.SecAddress[j-1]+ldfile.Adjust.DestOffset[i-1];
      {Rehandle the Adjustment Table For RISC-V}
@@ -10960,16 +10930,6 @@ begin
          inc(j);
         end;
        if(j<=length(tempfinal.GotSymbol)) then offset1:=j else offset1:=0;
-       j:=1;
-       while(j<=length(tempfinal.GotPltSymbol))do
-        begin
-         if(ldfile.Adjust.DestName[i-1]=tempfinal.GotPltSymbol[j-1]) then
-          begin
-           writepos[2]:=2+j; isexternal:=true; break;
-          end;
-         inc(j);
-        end;
-       if(j<=length(tempfinal.GotPltSymbol)) then offset2:=length(tempfinal.GotSymbol)+j else offset2:=0;
       end;
      if(ldfile.Adjust.Formula[i-1].mask=elf_riscv_u_i_type)then
       begin
@@ -11533,7 +11493,6 @@ begin
  for i:=1 to tempfinal.SecCount do
   begin
    if(tempfinal.SecName[i-1]='.got') then tempfinal.GotAddr:=tempfinal.SecAddress[i-1];
-   if(tempfinal.SecName[i-1]='.got.plt') then tempfinal.GotPltAddr:=tempfinal.SecAddress[i-1];
   end;
  {Now Relocate the file with adjustment table}
  SetLength(AdjustOrder,0);
@@ -11541,7 +11500,7 @@ begin
  SetLength(tempfinal.Rela.SymAddend,tempfinal.Rela.SymCount);
  SetLength(tempfinal.Rela.SymType,tempfinal.Rela.SymCount);
  writepos[1]:=3; writepos[2]:=3; startoffset:=0; endoffset:=0;
- movesecoffset:=0; index:=0; offset1:=0; offset2:=0;
+ movesecoffset:=0; index:=0; offset1:=0;
  for i:=1 to ldfile.Adjust.Count do
   begin
    if(ldfile.Adjust.AdjustType[i-1]=0) then continue;
@@ -11595,16 +11554,6 @@ begin
        inc(j);
       end;
      if(j<=length(tempfinal.GotSymbol)) then offset1:=j else offset1:=0;
-     j:=1;
-     while(j<=length(tempfinal.GotPltSymbol))do
-      begin
-       if(ldfile.Adjust.DestName[i-1]=tempfinal.GotPltSymbol[j-1]) then
-        begin
-         writepos[2]:=2+j; isexternal:=true; break;
-        end;
-       inc(j);
-      end;
-     if(j<=length(tempfinal.GotPltSymbol)) then offset2:=length(tempfinal.GotSymbol)+j else offset2:=0;
     end;
    if(ldarch=elf_machine_386) or (ldarch=elf_machine_x86_64) then
     begin
@@ -12842,7 +12791,7 @@ begin
  {Get the PE Symbol Table Needed Size and generate PE Symbol Table}
  symboltableaddr:=0; symbolstringtableptr:=0;
  if(stripsymbol) then goto label1;
- symbolstringtableptr:=sizeof(coff_symbol_table_item)*ldfile.SymTable.SymbolCount;
+ symbolstringtableptr:=4;
  SetLength(symbolTable,ldfile.SymTable.SymbolCount); i:=1;
  while(i<=ldfile.SymTable.SymbolCount)do
   begin
@@ -12864,7 +12813,7 @@ begin
    else
     begin
      symboltable[i-1].Name.Reserved:=0;
-     symboltable[i-1].Name.Offset:=symbolstringtableptr-(i-1)*sizeof(coff_symbol_table_item);
+     symboltable[i-1].Name.Offset:=symbolstringtableptr;
      inc(symbolstringtableptr,length(ldfile.SymTable.SymbolName[i-1])+1);
     end;
    symboltable[i-1].Address:=startoffset;
@@ -12889,9 +12838,10 @@ begin
    inc(i);
   end;
  {Then generate PE string table for symbol table}
- symbolstringtable:=tydq_allocmem(symbolstringtableptr-
- sizeof(coff_symbol_table_item)*ldfile.SymTable.SymbolCount);
- i:=1; offset1:=0;
+ symbolandstringtablesize:=symbolstringtableptr+
+ ldfile.SymTable.SymbolCount*sizeof(coff_symbol_table_item);
+ symbolstringtable:=tydq_allocmem(symbolstringtableptr-4);
+ i:=1; offset1:=1;
  while(i<=ldfile.SymTable.SymbolCount)do
   begin
    j:=1;
@@ -12923,7 +12873,6 @@ begin
  writeoffset:=0;
  writer.DosHeader.MagicNumber:='MZ';
  writer.DosHeader.FileAddressOfNewExeHeader:=sizeof(pe_dos_header)+64;
- tydq_move(pe_dos_stub_code,writer.DosStub,64);
  writer.PeHeader.signature:='PE';
  if(ldbit=1) then
   begin
@@ -12952,7 +12901,8 @@ begin
    writer.PeHeader.ImageHeader.Characteristics:=writer.PeHeader.ImageHeader.Characteristics or
    pe_image_file_characteristics_symbol_stripped;
    writer.PeHeader.ImageHeader.NumberOfSections:=3+Byte(haverodata);
-   writer.PeHeader.ImageHeader.SizeOfOptionalHeader:=sizeof(coff_optional_image_header32);
+   writer.PeHeader.ImageHeader.SizeOfOptionalHeader:=
+   sizeof(coff_optional_image_header32)+6*sizeof(pe_data_directory);
    writer.PeHeader.OptionalHeader32.AddressOfEntryPoint:=tempfinal.EntryAddress;
    writer.PeHeader.OptionalHeader32.BaseOfCode:=textoffset;
    writer.PeHeader.OptionalHeader32.BaseOfData:=dataoffset;
@@ -12992,19 +12942,23 @@ begin
    writer.PeHeader.OptionalHeader32.Win32VersionValue:=0;
    writer.PeHeader.OptionalHeader32.ImageBase:=0;
    writer.PeHeader.OptionalHeader32.LoaderFlags:=0;
-   writer.PeHeader.OptionalHeader32.FileAlignment:=align;
    writer.PeHeader.OptionalHeader32.CheckSum:=0;
+   writer.PeHeader.OptionalHeader32.DLLCharacteristics:=
+   pe_image_dll_characteristics_dynamic_base;
    writer.PeHeader.OptionalHeader32.SizeOfHeaders:=
    ld_align(sizeof(writer.DosHeader)+sizeof(writer.DosStub)+
    sizeof(writer.PeHeader.signature)+sizeof(writer.PeHeader.ImageHeader)+
    sizeof(writer.PeHeader.OptionalHeader32)+6*sizeof(pe_data_directory)
    +(3+Byte(haverodata))*sizeof(pe_image_section_header),align);
+   writer.PeHeader.OptionalHeader32.SectionAlignment:=align;
+   writer.PeHeader.OptionalHeader32.FileAlignment:=align;
    if(stripsymbol=false) then
    writer.PeHeader.OptionalHeader32.SizeOfImage:=
-   ld_align(symboltableAddr+symbolstringtableptr,align)
+   ld_align(symboltableAddr+symbolandstringtablesize,align)
    else
    writer.PeHeader.OptionalHeader32.SizeOfImage:=
    ld_align(relocoffset+baseaddresssize,align);
+   writer.PeHeader.OptionalHeader32.NumberOfRvaAndSizes:=6;
    SetLength(writer.DataHeader,6);
    writer.DataHeader[5].VirtualAddress:=relocoffset;
    writer.DataHeader[5].Size:=baseaddresssize;
@@ -13018,9 +12972,10 @@ begin
      writer.SectionHeader[0].NumberOfLineNumbers:=0;
      writer.SectionHeader[0].NumberOfRelocations:=0;
      writer.SectionHeader[0].Characteristics:=pe_image_section_characteristics_memory_execute
-     or pe_image_section_characteristics_memory_read;
+     or pe_image_section_characteristics_memory_read or pe_image_section_characteristics_type_code;
      writer.SectionHeader[0].PointerToLineNumbers:=0;
      writer.SectionHeader[0].PointerToRelocations:=0;
+     writer.SectionHeader[1].PointerToRawData:=textoffset;
      writer.SectionHeader[0].SizeOfRawData:=rodataoffset-textoffset;
      {Generate the rodata section}
      writer.SectionHeader[1].Name:='.rodata';
@@ -13028,9 +12983,11 @@ begin
      writer.SectionHeader[1].VirtualSize:=dataoffset-rodataoffset;
      writer.SectionHeader[1].NumberOfLineNumbers:=0;
      writer.SectionHeader[1].NumberOfRelocations:=0;
-     writer.SectionHeader[1].Characteristics:=pe_image_section_characteristics_memory_read;
+     writer.SectionHeader[1].Characteristics:=pe_image_section_characteristics_memory_read
+     or pe_image_section_characteristics_initialized_data;
      writer.SectionHeader[1].PointerToLineNumbers:=0;
      writer.SectionHeader[1].PointerToRelocations:=0;
+     writer.SectionHeader[1].PointerToRawData:=rodataoffset;
      writer.SectionHeader[1].SizeOfRawData:=dataoffset-rodataoffset;
      {Generate the data section}
      writer.SectionHeader[2].Name:='.data';
@@ -13039,9 +12996,11 @@ begin
      writer.SectionHeader[2].NumberOfLineNumbers:=0;
      writer.SectionHeader[2].NumberOfRelocations:=0;
      writer.SectionHeader[2].Characteristics:=pe_image_section_characteristics_memory_read
-     or pe_image_section_characteristics_memory_write;
+     or pe_image_section_characteristics_memory_write
+     or pe_image_section_characteristics_initialized_data;
      writer.SectionHeader[2].PointerToLineNumbers:=0;
      writer.SectionHeader[2].PointerToRelocations:=0;
+     writer.SectionHeader[2].PointerToRawData:=dataoffset;
      writer.SectionHeader[2].SizeOfRawData:=relocoffset-dataoffset;
      {Generate the reloc section}
      writer.SectionHeader[3].Name:='.reloc';
@@ -13049,9 +13008,11 @@ begin
      writer.SectionHeader[3].VirtualSize:=baseaddresssize;
      writer.SectionHeader[3].NumberOfLineNumbers:=0;
      writer.SectionHeader[3].NumberOfRelocations:=0;
-     writer.SectionHeader[3].Characteristics:=pe_image_section_characteristics_memory_discardable;
+     writer.SectionHeader[3].Characteristics:=pe_image_section_characteristics_memory_read or
+     pe_image_section_characteristics_memory_discardable;
      writer.SectionHeader[3].PointerToLineNumbers:=0;
      writer.SectionHeader[3].PointerToRelocations:=0;
+     writer.SectionHeader[3].PointerToRawData:=relocoffset;
      writer.SectionHeader[3].SizeOfRawData:=baseaddresssize;
     end
    else
@@ -13063,9 +13024,10 @@ begin
      writer.SectionHeader[0].NumberOfLineNumbers:=0;
      writer.SectionHeader[0].NumberOfRelocations:=0;
      writer.SectionHeader[0].Characteristics:=pe_image_section_characteristics_memory_execute
-     or pe_image_section_characteristics_memory_read;
+     or pe_image_section_characteristics_memory_read or pe_image_section_characteristics_type_code;
      writer.SectionHeader[0].PointerToLineNumbers:=0;
      writer.SectionHeader[0].PointerToRelocations:=0;
+     writer.SectionHeader[0].PointerToRawData:=textoffset;
      writer.SectionHeader[0].SizeOfRawData:=dataoffset-textoffset;
      {Generate the data section}
      writer.SectionHeader[1].Name:='.data';
@@ -13073,9 +13035,12 @@ begin
      writer.SectionHeader[1].VirtualSize:=relocoffset-dataoffset;
      writer.SectionHeader[1].NumberOfLineNumbers:=0;
      writer.SectionHeader[1].NumberOfRelocations:=0;
-     writer.SectionHeader[1].Characteristics:=pe_image_section_characteristics_memory_read;
+     writer.SectionHeader[1].Characteristics:=pe_image_section_characteristics_memory_read
+     or pe_image_section_characteristics_memory_write
+     or pe_image_section_characteristics_initialized_data;
      writer.SectionHeader[1].PointerToLineNumbers:=0;
      writer.SectionHeader[1].PointerToRelocations:=0;
+     writer.SectionHeader[1].PointerToRawData:=dataoffset;
      writer.SectionHeader[1].SizeOfRawData:=relocoffset-dataoffset;
      {Generate the reloc section}
      writer.SectionHeader[2].Name:='.reloc';
@@ -13083,9 +13048,11 @@ begin
      writer.SectionHeader[2].VirtualSize:=baseaddresssize;
      writer.SectionHeader[2].NumberOfLineNumbers:=0;
      writer.SectionHeader[2].NumberOfRelocations:=0;
-     writer.SectionHeader[2].Characteristics:=pe_image_section_characteristics_memory_discardable;
+     writer.SectionHeader[2].Characteristics:=pe_image_section_characteristics_memory_read or
+     pe_image_section_characteristics_memory_discardable;
      writer.SectionHeader[2].PointerToLineNumbers:=0;
      writer.SectionHeader[2].PointerToRelocations:=0;
+     writer.SectionHeader[2].PointerToRawData:=relocoffset;
      writer.SectionHeader[2].SizeOfRawData:=baseaddresssize;
     end;
    pebinary:=tydq_allocmem(writer.PeHeader.OptionalHeader32.SizeOfImage);
@@ -13103,18 +13070,23 @@ begin
    tydq_move(writer.PeHeader.OptionalHeader32,(pebinary+writeoffset)^,
    sizeof(writer.PeHeader.OptionalHeader32));
    inc(writeoffset,sizeof(writer.PeHeader.OptionalHeader32));
-   tydq_move(writer.DataHeader[0],(pebinary+writeoffset)^,sizeof(pe_data_directory)*6);
-   inc(writeoffset,sizeof(pe_data_directory)*6);
-   tydq_move(writer.SectionHeader[0],(pebinary+writeoffset)^,sizeof(pe_image_section_header)*
-   (3+Byte(haverodata)));
-   inc(writeoffset,sizeof(pe_image_section_header)*(3+Byte(haverodata)));
+   for i:=1 to length(writer.DataHeader) do
+    begin
+     tydq_move(writer.DataHeader[i-1],(pebinary+writeoffset)^,sizeof(pe_data_directory));
+     inc(writeoffset,sizeof(pe_data_directory));
+    end;
+   for i:=1 to length(writer.SectionHeader) do
+    begin
+     tydq_move(writer.SectionHeader[i-1],(pebinary+writeoffset)^,sizeof(pe_image_section_header));
+     inc(writeoffset,sizeof(pe_image_section_header));
+    end;
   end
  else if(ldbit=2) then
   begin
-   if(ldarch=elf_machine_386) then
-   writer.PeHeader.ImageHeader.Machine:=pe_image_file_machine_i386
-   else if(ldarch=elf_machine_arm) then
-   writer.PeHeader.ImageHeader.Machine:=pe_image_file_machine_arm
+   if(ldarch=elf_machine_x86_64) then
+   writer.PeHeader.ImageHeader.Machine:=pe_image_file_machine_amd64
+   else if(ldarch=elf_machine_aarch64) then
+   writer.PeHeader.ImageHeader.Machine:=pe_image_file_machine_arm64
    else if(ldarch=elf_machine_riscv) then
    writer.PeHeader.ImageHeader.Machine:=pe_image_file_machine_riscv64
    else if(ldarch=elf_machine_loongarch) then
@@ -13136,7 +13108,8 @@ begin
    writer.PeHeader.ImageHeader.Characteristics:=writer.PeHeader.ImageHeader.Characteristics or
    pe_image_file_characteristics_symbol_stripped;
    writer.PeHeader.ImageHeader.NumberOfSections:=3+Byte(haverodata);
-   writer.PeHeader.ImageHeader.SizeOfOptionalHeader:=sizeof(coff_optional_image_header64);
+   writer.PeHeader.ImageHeader.SizeOfOptionalHeader:=
+   sizeof(coff_optional_image_header64)+6*sizeof(pe_data_directory);
    writer.PeHeader.OptionalHeader64.AddressOfEntryPoint:=tempfinal.EntryAddress;
    writer.PeHeader.OptionalHeader64.BaseOfCode:=textoffset;
    if(rodataoffset<>0) then
@@ -13160,6 +13133,8 @@ begin
    writer.PeHeader.OptionalHeader64.MinorOperatingSystemVersion:=0;
    writer.PeHeader.OptionalHeader64.MajorSubSystemVersion:=0;
    writer.PeHeader.OptionalHeader64.MinorSubSystemVersion:=0;
+   writer.PeHeader.OptionalHeader64.SectionAlignment:=align;
+   writer.PeHeader.OptionalHeader64.FileAlignment:=align;
    if(format=ld_format_efi_application) then
    writer.PeHeader.OptionalHeader64.SubSystem:=pe_image_subsystem_efi_application
    else if(format=ld_format_efi_boot_driver) then
@@ -13177,6 +13152,9 @@ begin
    writer.PeHeader.OptionalHeader64.LoaderFlags:=0;
    writer.PeHeader.OptionalHeader64.FileAlignment:=align;
    writer.PeHeader.OptionalHeader64.CheckSum:=0;
+   writer.PeHeader.OptionalHeader64.DLLCharacteristics:=
+   pe_image_dll_characteristics_high_entropy_virtual_address or
+   pe_image_dll_characteristics_dynamic_base;
    writer.PeHeader.OptionalHeader64.SizeOfHeaders:=
    ld_align(sizeof(writer.DosHeader)+sizeof(writer.DosStub)+
    sizeof(writer.PeHeader.signature)+sizeof(writer.PeHeader.ImageHeader)+
@@ -13184,10 +13162,11 @@ begin
    +(3+Byte(haverodata))*sizeof(pe_image_section_header),align);
    if(stripsymbol=false) then
    writer.PeHeader.OptionalHeader64.SizeOfImage:=
-   ld_align(symboltableAddr+symbolstringtableptr,align)
+   ld_align(symboltableAddr+symbolandstringtablesize,align)
    else
    writer.PeHeader.OptionalHeader64.SizeOfImage:=
    ld_align(relocoffset+baseaddresssize,align);
+   writer.PeHeader.OptionalHeader64.NumberOfRvaAndSizes:=6;
    SetLength(writer.DataHeader,6);
    writer.DataHeader[5].VirtualAddress:=relocoffset;
    writer.DataHeader[5].Size:=baseaddresssize;
@@ -13201,9 +13180,11 @@ begin
      writer.SectionHeader[0].NumberOfLineNumbers:=0;
      writer.SectionHeader[0].NumberOfRelocations:=0;
      writer.SectionHeader[0].Characteristics:=pe_image_section_characteristics_memory_execute
-     or pe_image_section_characteristics_memory_read;
+     or pe_image_section_characteristics_memory_read
+     or pe_image_section_characteristics_type_code;
      writer.SectionHeader[0].PointerToLineNumbers:=0;
      writer.SectionHeader[0].PointerToRelocations:=0;
+     writer.SectionHeader[1].PointerToRawData:=textoffset;
      writer.SectionHeader[0].SizeOfRawData:=rodataoffset-textoffset;
      {Generate the rodata section}
      writer.SectionHeader[1].Name:='.rodata';
@@ -13211,9 +13192,11 @@ begin
      writer.SectionHeader[1].VirtualSize:=dataoffset-rodataoffset;
      writer.SectionHeader[1].NumberOfLineNumbers:=0;
      writer.SectionHeader[1].NumberOfRelocations:=0;
-     writer.SectionHeader[1].Characteristics:=pe_image_section_characteristics_memory_read;
+     writer.SectionHeader[1].Characteristics:=pe_image_section_characteristics_memory_read
+     or pe_image_section_characteristics_initialized_data;
      writer.SectionHeader[1].PointerToLineNumbers:=0;
      writer.SectionHeader[1].PointerToRelocations:=0;
+     writer.SectionHeader[1].PointerToRawData:=rodataoffset;
      writer.SectionHeader[1].SizeOfRawData:=dataoffset-rodataoffset;
      {Generate the data section}
      writer.SectionHeader[2].Name:='.data';
@@ -13222,9 +13205,11 @@ begin
      writer.SectionHeader[2].NumberOfLineNumbers:=0;
      writer.SectionHeader[2].NumberOfRelocations:=0;
      writer.SectionHeader[2].Characteristics:=pe_image_section_characteristics_memory_read
-     or pe_image_section_characteristics_memory_write;
+     or pe_image_section_characteristics_memory_write
+     or pe_image_section_characteristics_initialized_data;
      writer.SectionHeader[2].PointerToLineNumbers:=0;
      writer.SectionHeader[2].PointerToRelocations:=0;
+     writer.SectionHeader[2].PointerToRawData:=dataoffset;
      writer.SectionHeader[2].SizeOfRawData:=relocoffset-dataoffset;
      {Generate the reloc section}
      writer.SectionHeader[3].Name:='.reloc';
@@ -13232,9 +13217,11 @@ begin
      writer.SectionHeader[3].VirtualSize:=baseaddresssize;
      writer.SectionHeader[3].NumberOfLineNumbers:=0;
      writer.SectionHeader[3].NumberOfRelocations:=0;
-     writer.SectionHeader[3].Characteristics:=pe_image_section_characteristics_memory_discardable;
+     writer.SectionHeader[3].Characteristics:=pe_image_section_characteristics_memory_read
+     or pe_image_section_characteristics_memory_discardable;
      writer.SectionHeader[3].PointerToLineNumbers:=0;
      writer.SectionHeader[3].PointerToRelocations:=0;
+     writer.SectionHeader[3].PointerToRawData:=relocoffset;
      writer.SectionHeader[3].SizeOfRawData:=baseaddresssize;
     end
    else
@@ -13246,7 +13233,9 @@ begin
      writer.SectionHeader[0].NumberOfLineNumbers:=0;
      writer.SectionHeader[0].NumberOfRelocations:=0;
      writer.SectionHeader[0].Characteristics:=pe_image_section_characteristics_memory_execute
-     or pe_image_section_characteristics_memory_read;
+     or pe_image_section_characteristics_memory_read
+     or pe_image_section_characteristics_type_code;
+     writer.SectionHeader[0].PointerToRawData:=textoffset;
      writer.SectionHeader[0].PointerToLineNumbers:=0;
      writer.SectionHeader[0].PointerToRelocations:=0;
      writer.SectionHeader[0].SizeOfRawData:=dataoffset-textoffset;
@@ -13256,7 +13245,9 @@ begin
      writer.SectionHeader[1].VirtualSize:=relocoffset-dataoffset;
      writer.SectionHeader[1].NumberOfLineNumbers:=0;
      writer.SectionHeader[1].NumberOfRelocations:=0;
-     writer.SectionHeader[1].Characteristics:=pe_image_section_characteristics_memory_read;
+     writer.SectionHeader[1].Characteristics:=pe_image_section_characteristics_memory_read or
+     pe_image_section_characteristics_memory_write or pe_image_section_characteristics_initialized_data;
+     writer.SectionHeader[1].PointerToRawData:=dataoffset;
      writer.SectionHeader[1].PointerToLineNumbers:=0;
      writer.SectionHeader[1].PointerToRelocations:=0;
      writer.SectionHeader[1].SizeOfRawData:=relocoffset-dataoffset;
@@ -13266,7 +13257,9 @@ begin
      writer.SectionHeader[2].VirtualSize:=baseaddresssize;
      writer.SectionHeader[2].NumberOfLineNumbers:=0;
      writer.SectionHeader[2].NumberOfRelocations:=0;
-     writer.SectionHeader[2].Characteristics:=pe_image_section_characteristics_memory_discardable;
+     writer.SectionHeader[2].Characteristics:=pe_image_section_characteristics_memory_read or
+     pe_image_section_characteristics_memory_discardable;
+     writer.SectionHeader[2].PointerToRawData:=relocoffset;
      writer.SectionHeader[2].PointerToLineNumbers:=0;
      writer.SectionHeader[2].PointerToRelocations:=0;
      writer.SectionHeader[2].SizeOfRawData:=baseaddresssize;
@@ -13286,11 +13279,16 @@ begin
    tydq_move(writer.PeHeader.OptionalHeader64,(pebinary+writeoffset)^,
    sizeof(writer.PeHeader.OptionalHeader64));
    inc(writeoffset,sizeof(writer.PeHeader.OptionalHeader64));
-   tydq_move(writer.DataHeader[0],(pebinary+writeoffset)^,sizeof(pe_data_directory)*6);
-   inc(writeoffset,sizeof(pe_data_directory)*6);
-   tydq_move(writer.SectionHeader[0],(pebinary+writeoffset)^,sizeof(pe_image_section_header)*
-   (3+Byte(haverodata)));
-   inc(writeoffset,sizeof(pe_image_section_header)*(3+Byte(haverodata)));
+   for i:=1 to length(writer.DataHeader) do
+    begin
+     tydq_move(writer.DataHeader[i-1],(pebinary+writeoffset)^,sizeof(pe_data_directory));
+     inc(writeoffset,sizeof(pe_data_directory));
+    end;
+   for i:=1 to length(writer.SectionHeader) do
+    begin
+     tydq_move(writer.SectionHeader[i-1],(pebinary+writeoffset)^,sizeof(pe_image_section_header));
+     inc(writeoffset,sizeof(pe_image_section_header));
+    end;
   end;
  {Then Move the content of PE to file}
  i:=1; writeoffset:=0;
@@ -13319,8 +13317,9 @@ begin
  writeoffset:=symboltableAddr;
  tydq_move(symboltable[0],(pebinary+writeoffset)^,length(symboltable)*sizeof(coff_symbol_table_item));
  inc(writeoffset,length(symboltable)*sizeof(coff_symbol_table_item));
- tydq_move(symbolstringtable^,(pebinary+writeoffset)^,symbolstringtableptr-
- sizeof(coff_symbol_table_item)*ldfile.SymTable.SymbolCount);
+ tydq_move(symbolstringtableptr,(pebinary+writeoffset)^,4);
+ inc(writeoffset,4);
+ tydq_move(symbolstringtable^,(pebinary+writeoffset)^,symbolstringtableptr-4);
  writeoffset:=checksumoffset;
  if(ldbit=1) then
   begin
