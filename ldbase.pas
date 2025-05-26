@@ -61,7 +61,6 @@ type natuint=SizeUint;
                                  SymbolCount:Natuint;
                                  end;
      ld_object_file_rel_table=packed record
-                              SecIndex:word;
                               SymSecName:string;
                               SymName:array of string;
                               SymOffset:array of Natuint;
@@ -70,7 +69,6 @@ type natuint=SizeUint;
                               SymCount:Natuint;
                               end;
      ld_object_file_rela_table=packed record
-                               SecIndex:word;
                                SymSecName:string;
                                SymName:array of string;
                                SymOffset:array of Natuint;
@@ -84,7 +82,6 @@ type natuint=SizeUint;
                          SecFlag:Dword;
                          SecUsed:array of boolean;
                          SecName:array of string;
-                         SecAlign:array of Dword;
                          SecType:array of Dword;
                          SecContent:array of Pointer;
                          SecSize:array of Natuint;
@@ -871,10 +868,10 @@ begin
 end;
 procedure ld_calculate_behind(var Address:dynqwordarray;
 Index:dynwordarray;firstindex:word;distance:Int64);
-var i:Natuint;
+var i,len:Natuint;
 begin
- i:=1;
- while(i<=length(Index))do
+ i:=1; len:=length(index);
+ while(i<=len)do
   begin
    if(Index[i-1]>=firstindex) then Address[i-1]:=Address[i-1]+distance;
    inc(i);
@@ -1249,7 +1246,6 @@ begin
      templist1.ObjFile[i-1].SecFlag:=objlist.item[i-1].Ptr.HdrPtr.hdr32^.elf_flags;
      TempList1.ObjFile[i-1].SecCount:=count;
      SetLength(TempList1.ObjFile[i-1].SecUsed,count);
-     SetLength(TempList1.ObjFile[i-1].SecAlign,count);
      SetLength(TempList1.ObjFile[i-1].SecName,count);
      SetLength(TempList1.ObjFile[i-1].SecType,count);
      SetLength(TempList1.ObjFile[i-1].SecSize,count);
@@ -1266,10 +1262,11 @@ begin
        Pelf32_section_header(ptr.sec32ptr+j-1)^.section_header_type;
        TempList1.ObjFile[i-1].SecSize[j-1]:=
        Pelf32_section_header(ptr.sec32ptr+j-1)^.section_header_size;
-       TempList1.ObjFile[i-1].SecAlign[j-1]:=
-       Pelf32_section_header(ptr.sec32ptr+j-1)^.section_header_address_align;
        if(startaddr<>nil) and (TempList1.ObjFile[i-1].SecSize[j-1]<>0) and
-       (TempList1.ObjFile[i-1].SecType[j-1]<>elf_section_type_nobit) then
+       (TempList1.ObjFile[i-1].SecType[j-1]<>elf_section_type_nobit)
+       and (TempList1.ObjFile[i-1].SecType[j-1]<>elf_section_type_note) and
+       (Pelf32_section_header(ptr.sec32ptr+j-1)^.section_header_flags and elf_section_flag_alloc
+       =elf_section_flag_alloc) then
         begin
          TempList1.ObjFile[i-1].SecContent[j-1]:=tydq_allocmem(
          Pelf32_section_header(ptr.sec32ptr+j-1)^.section_header_size);
@@ -1291,12 +1288,9 @@ begin
          templist1.ObjFile[i-1].SecRel[templist1.ObjFile[i-1].SecRelCount-1].SymSecName:=
          templist1.ObjFile[i-1].SecRel[templist1.ObjFile[i-1].SecRelCount-1].SymSecName+
          '.'+IntToStr(i);
-         templist1.ObjFile[i-1].SecRel[templist1.ObjFile[i-1].SecRelCount-1].SecIndex:=j-1;
          SetLength(templist1.ObjFile[i-1].SecRel[templist1.ObjFile[i-1].SecRelCount-1].Symbol,
          TempList1.ObjFile[i-1].SecSize[j-1] shr 3);
          SetLength(templist1.ObjFile[i-1].SecRel[templist1.ObjFile[i-1].SecRelCount-1].SymType,
-         TempList1.ObjFile[i-1].SecSize[j-1] shr 3);
-         SetLength(templist1.ObjFile[i-1].SecRel[templist1.ObjFile[i-1].SecRelCount-1].SymName,
          TempList1.ObjFile[i-1].SecSize[j-1] shr 3);
          SetLength(templist1.ObjFile[i-1].SecRel[templist1.ObjFile[i-1].SecRelCount-1].SymOffset,
          TempList1.ObjFile[i-1].SecSize[j-1] shr 3);
@@ -1310,7 +1304,6 @@ begin
            elf32_reloc_type(Pelf32_rel(tempptr+offset)^.Info);
            templist1.ObjFile[i-1].SecRel[templist1.ObjFile[i-1].SecRelCount-1].SymOffset[k-1]:=
            Pelf32_rel(tempptr+offset)^.Offset;
-           templist1.ObjFile[i-1].SecRel[templist1.ObjFile[i-1].SecRelCount-1].SymName[k-1]:='';
            inc(offset,8);
           end;
         end
@@ -1326,12 +1319,9 @@ begin
          templist1.ObjFile[i-1].SecRela[templist1.ObjFile[i-1].SecRelaCount-1].SymSecName:=
          templist1.ObjFile[i-1].SecRela[templist1.ObjFile[i-1].SecRelaCount-1].SymSecName+
          '.'+IntToStr(i);
-         templist1.ObjFile[i-1].SecRela[templist1.ObjFile[i-1].SecRelaCount-1].SecIndex:=j-1;
          SetLength(templist1.ObjFile[i-1].SecRela[templist1.ObjFile[i-1].SecRelaCount-1].Symbol,
          TempList1.ObjFile[i-1].SecSize[j-1] div 12);
          SetLength(templist1.ObjFile[i-1].SecRela[templist1.ObjFile[i-1].SecRelaCount-1].SymType,
-         TempList1.ObjFile[i-1].SecSize[j-1] div 12);
-         SetLength(templist1.ObjFile[i-1].SecRela[templist1.ObjFile[i-1].SecRelaCount-1].SymName,
          TempList1.ObjFile[i-1].SecSize[j-1] div 12);
          SetLength(templist1.ObjFile[i-1].SecRela[templist1.ObjFile[i-1].SecRelaCount-1].SymOffset,
          TempList1.ObjFile[i-1].SecSize[j-1] div 12);
@@ -1349,7 +1339,6 @@ begin
            Pelf32_rela(tempptr+offset)^.Offset;
            templist1.ObjFile[i-1].SecRela[templist1.ObjFile[i-1].SecRelaCount-1].SymAddend[k-1]:=
            Pelf32_rela(tempptr+offset)^.Addend;
-           templist1.ObjFile[i-1].SecRela[templist1.ObjFile[i-1].SecRelaCount-1].SymName[k-1]:='';
            inc(offset,12);
           end;
         end
@@ -1422,7 +1411,6 @@ begin
      TempList1.ObjFile[i-1].SecCount:=count;
      SetLength(TempList1.ObjFile[i-1].SecUsed,count);
      SetLength(TempList1.ObjFile[i-1].SecName,count);
-     SetLength(TempList1.ObjFile[i-1].SecAlign,count);
      SetLength(TempList1.ObjFile[i-1].SecType,count);
      SetLength(TempList1.ObjFile[i-1].SecSize,count);
      SetLength(TempList1.ObjFile[i-1].SecContent,count);
@@ -1438,10 +1426,11 @@ begin
        Pelf64_section_header(ptr.sec64ptr+j-1)^.section_header_type;
        TempList1.ObjFile[i-1].SecSize[j-1]:=
        Pelf64_section_header(ptr.sec64ptr+j-1)^.section_header_size;
-       TempList1.ObjFile[i-1].SecAlign[j-1]:=
-       Pelf64_section_header(ptr.sec64ptr+j-1)^.section_header_address_align;
        if(startaddr<>nil) and (TempList1.ObjFile[i-1].SecSize[j-1]<>0) and
-       (TempList1.ObjFile[i-1].SecType[j-1]<>elf_section_type_nobit) then
+       (TempList1.ObjFile[i-1].SecType[j-1]<>elf_section_type_nobit)
+       and (TempList1.ObjFile[i-1].SecType[j-1]<>elf_section_type_note) and
+       (Pelf64_section_header(ptr.sec64ptr+j-1)^.section_header_flags and elf_section_flag_alloc
+       =elf_section_flag_alloc)   then
         begin
          TempList1.ObjFile[i-1].SecContent[j-1]:=tydq_allocmem(
          Pelf64_section_header(ptr.sec64ptr+j-1)^.section_header_size);
@@ -1463,12 +1452,9 @@ begin
          templist1.ObjFile[i-1].SecRel[templist1.ObjFile[i-1].SecRelCount-1].SymSecName:=
          templist1.ObjFile[i-1].SecRel[templist1.ObjFile[i-1].SecRelCount-1].SymSecName
          +'.'+IntToStr(i);
-         templist1.ObjFile[i-1].SecRel[templist1.ObjFile[i-1].SecRelCount-1].SecIndex:=j-1;
          SetLength(templist1.ObjFile[i-1].SecRel[templist1.ObjFile[i-1].SecRelCount-1].Symbol,
          TempList1.ObjFile[i-1].SecSize[j-1] shr 4);
          SetLength(templist1.ObjFile[i-1].SecRel[templist1.ObjFile[i-1].SecRelCount-1].SymType,
-         TempList1.ObjFile[i-1].SecSize[j-1] shr 4);
-         SetLength(templist1.ObjFile[i-1].SecRel[templist1.ObjFile[i-1].SecRelCount-1].SymName,
          TempList1.ObjFile[i-1].SecSize[j-1] shr 4);
          SetLength(templist1.ObjFile[i-1].SecRel[templist1.ObjFile[i-1].SecRelCount-1].SymOffset,
          TempList1.ObjFile[i-1].SecSize[j-1] shr 4);
@@ -1482,7 +1468,6 @@ begin
            elf64_reloc_type(Pelf64_rel(tempptr+offset)^.Info);
            templist1.ObjFile[i-1].SecRel[templist1.ObjFile[i-1].SecRelCount-1].SymOffset[k-1]:=
            Pelf64_rel(tempptr+offset)^.Offset;
-           templist1.ObjFile[i-1].SecRel[templist1.ObjFile[i-1].SecRelCount-1].SymName[k-1]:='';
            inc(offset,16);
           end;
         end
@@ -1498,12 +1483,9 @@ begin
          templist1.ObjFile[i-1].SecRela[templist1.ObjFile[i-1].SecRelaCount-1].SymSecName:=
          templist1.ObjFile[i-1].SecRela[templist1.ObjFile[i-1].SecRelaCount-1].SymSecName
          +'.'+IntToStr(i);
-         templist1.ObjFile[i-1].SecRela[templist1.ObjFile[i-1].SecRelaCount-1].SecIndex:=j-1;
          SetLength(templist1.ObjFile[i-1].SecRela[templist1.ObjFile[i-1].SecRelaCount-1].Symbol,
          TempList1.ObjFile[i-1].SecSize[j-1] div 24);
          SetLength(templist1.ObjFile[i-1].SecRela[templist1.ObjFile[i-1].SecRelaCount-1].SymType,
-         TempList1.ObjFile[i-1].SecSize[j-1] div 24);
-         SetLength(templist1.ObjFile[i-1].SecRela[templist1.ObjFile[i-1].SecRelaCount-1].SymName,
          TempList1.ObjFile[i-1].SecSize[j-1] div 24);
          SetLength(templist1.ObjFile[i-1].SecRela[templist1.ObjFile[i-1].SecRelaCount-1].SymOffset,
          TempList1.ObjFile[i-1].SecSize[j-1] div 24);
@@ -1521,7 +1503,6 @@ begin
            Pelf64_rela(tempptr+offset)^.Offset;
            templist1.ObjFile[i-1].SecRela[templist1.ObjFile[i-1].SecRelaCount-1].SymAddend[k-1]:=
            Pelf64_rela(tempptr+offset)^.Addend;
-           templist1.ObjFile[i-1].SecRela[templist1.ObjFile[i-1].SecRelaCount-1].SymName[k-1]:='';
            inc(offset,24);
           end;
         end
@@ -1599,14 +1580,11 @@ begin
      SetLength(middlelist.SecRel,middlelist.SecRelCount);
      middlelist.SecRela[middlelist.SecRelaCount-1].SymSecName:=
      templist1.ObjFile[i-1].SecRela[j-1].SymSecName;
-     middlelist.SecRel[middlelist.SecRelCount-1].SecIndex:=0;
      middlelist.SecRel[middlelist.SecRelCount-1].SymCount:=
      templist1.ObjFile[i-1].SecRel[j-1].SymCount;
      SetLength(middlelist.SecRel[middlelist.SecRelCount-1].SymOffset,
      templist1.ObjFile[i-1].SecRel[j-1].SymCount);
      SetLength(middlelist.SecRel[middlelist.SecRelCount-1].SymName,
-     templist1.ObjFile[i-1].SecRel[j-1].SymCount);
-     SetLength(middlelist.SecRel[middlelist.SecRelCount-1].Symbol,
      templist1.ObjFile[i-1].SecRel[j-1].SymCount);
      SetLength(middlelist.SecRel[middlelist.SecRelCount-1].SymType,
      templist1.ObjFile[i-1].SecRel[j-1].SymCount);
@@ -1619,8 +1597,6 @@ begin
        else
        middlelist.SecRel[middlelist.SecRelaCount-1].SymName[k-1]:=
        TempList1.ObjFile[i-1].SymTable.SymbolName[templist1.ObjFile[i-1].SecRel[j-1].Symbol[k-1]-1];
-       middlelist.SecRel[middlelist.SecRelCount-1].Symbol[k-1]:=
-       templist1.ObjFile[i-1].SecRel[j-1].Symbol[k-1];
        middlelist.SecRel[middlelist.SecRelCount-1].SymType[k-1]:=
        templist1.ObjFile[i-1].SecRel[j-1].SymType[k-1];
       end;
@@ -1635,14 +1611,11 @@ begin
      SetLength(middlelist.SecRela,middlelist.SecRelaCount);
      middlelist.SecRela[middlelist.SecRelaCount-1].SymSecName:=
      templist1.ObjFile[i-1].SecRela[j-1].SymSecName;
-     middlelist.SecRela[middlelist.SecRelaCount-1].SecIndex:=0;
      middlelist.SecRela[middlelist.SecRelaCount-1].SymCount:=
      templist1.ObjFile[i-1].SecRela[j-1].SymCount;
      SetLength(middlelist.SecRela[middlelist.SecRelaCount-1].SymOffset,
      templist1.ObjFile[i-1].SecRela[j-1].SymCount);
      SetLength(middlelist.SecRela[middlelist.SecRelaCount-1].SymName,
-     templist1.ObjFile[i-1].SecRela[j-1].SymCount);
-     SetLength(middlelist.SecRela[middlelist.SecRelaCount-1].Symbol,
      templist1.ObjFile[i-1].SecRela[j-1].SymCount);
      SetLength(middlelist.SecRela[middlelist.SecRelaCount-1].SymType,
      templist1.ObjFile[i-1].SecRela[j-1].SymCount);
@@ -1657,8 +1630,6 @@ begin
        else
        middlelist.SecRela[middlelist.SecRelaCount-1].SymName[k-1]:=
        TempList1.ObjFile[i-1].SymTable.SymbolName[templist1.ObjFile[i-1].SecRela[j-1].Symbol[k-1]-1];
-       middlelist.SecRela[middlelist.SecRelaCount-1].Symbol[k-1]:=
-       templist1.ObjFile[i-1].SecRela[j-1].Symbol[k-1];
        middlelist.SecRela[middlelist.SecRelaCount-1].SymType[k-1]:=
        templist1.ObjFile[i-1].SecRela[j-1].SymType[k-1];
        middlelist.SecRela[middlelist.SecRelaCount-1].SymAddend[k-1]:=
@@ -1678,11 +1649,11 @@ begin
      inc(middlelist.SymTable.SymbolCount);
      SetLength(middlelist.SymTable.SymbolQuotedByMain,middlelist.SymTable.SymbolCount);
      SetLength(middlelist.SymTable.SymbolBinding,middlelist.SymTable.SymbolCount);
-     SetLength(middlelist.SymTable.SymbolIndex,middlelist.SymTable.SymbolCount);
      SetLength(middlelist.SymTable.SymbolName,middlelist.SymTable.SymbolCount);
      SetLength(middlelist.SymTable.SymbolSection,middlelist.SymTable.SymbolCount);
      SetLength(middlelist.SymTable.SymbolSize,middlelist.SymTable.SymbolCount);
      SetLength(middlelist.SymTable.SymbolType,middlelist.SymTable.SymbolCount);
+     SetLength(middlelist.SymTable.SymbolIndex,middlelist.SymTable.SymbolCount);
      SetLength(middlelist.SymTable.SymbolValue,middlelist.SymTable.SymbolCount);
      SetLength(middlelist.SymTable.SymbolVisible,middlelist.SymTable.SymbolCount);
      SetLength(middlelist.SymTable.SymbolFileIndex,middlelist.SymTable.SymbolCount);
@@ -1695,8 +1666,6 @@ begin
      templist1.ObjFile[i-1].SymTable.SymbolName[j-1];
      middlelist.SymTable.SymbolSection[middlelist.SymTable.SymbolCount-1]:=
      templist1.ObjFile[i-1].SymTable.SymbolSection[j-1];
-     middlelist.SymTable.SymbolIndex[middlelist.SymTable.SymbolCount-1]:=
-     templist1.ObjFile[i-1].SymTable.SymbolIndex[j-1];
      middlelist.SymTable.SymbolSize[middlelist.SymTable.SymbolCount-1]:=
      templist1.ObjFile[i-1].SymTable.SymbolSize[j-1];
      middlelist.SymTable.SymbolType[middlelist.SymTable.SymbolCount-1]:=
@@ -1708,19 +1677,22 @@ begin
      middlelist.SymTable.SymbolFileIndex[middlelist.SymTable.SymbolCount-1]:=i;
     end;
   end;
- if(SmartLinking) then ld_handle_symbol_table(middlelist,EntryName,SmartLinking);
  {SmartLink the sections}
- for i:=1 to middlelist.SymTable.SymbolCount do
+ if(SmartLinking) then
   begin
-   if(middlelist.SymTable.SymbolQuotedByMain[i-1]=SmartLinking)
-   and(middlelist.symTable.SymbolSection[i-1]<>'') then
+   ld_handle_symbol_table(middlelist,EntryName,SmartLinking);
+   for i:=1 to middlelist.SymTable.SymbolCount do
     begin
-     j:=middlelist.SymTable.SymbolFileIndex[i-1];
-     for k:=1 to templist1.ObjFile[j-1].SecCount do
+     if(middlelist.SymTable.SymbolQuotedByMain[i-1]=true)
+     and(middlelist.symTable.SymbolSection[i-1]<>'') then
       begin
-       if(middlelist.SymTable.SymbolSection[i-1]=templist1.ObjFile[j-1].SecName[k-1])then
+       j:=middlelist.SymTable.SymbolFileIndex[i-1];
+       for k:=1 to templist1.ObjFile[j-1].SecCount do
         begin
-         templist1.ObjFile[j-1].SecUsed[k-1]:=true; break;
+         if(middlelist.SymTable.SymbolSection[i-1]=templist1.ObjFile[j-1].SecName[k-1])then
+          begin
+           templist1.ObjFile[j-1].SecUsed[k-1]:=true; break;
+          end;
         end;
       end;
     end;
@@ -1753,7 +1725,9 @@ begin
       begin
        if(Copy(templist1.ObjFile[j-1].SecName[k-1],1,length(Order[i-1]))<>Order[i-1]) or
        (templist1.ObjFile[j-1].SecSize[k-1]<=0) then continue;
-       if(templist1.ObjFile[j-1].SecUsed[k-1]) then
+       if(Order[i-1]<>'.bss') and (Order[i-1]<>'.tbss') and
+       (templist1.ObjFile[j-1].SecContent[k-1]=nil) then continue;
+       if(templist1.ObjFile[j-1].SecUsed[k-1]=SmartLinking) then
         begin
          inc(templist2.SecContent[templist2.SecCount-1].SecCount);
          tempcount:=templist2.SecContent[templist2.SecCount-1].SecCount;
@@ -1859,15 +1833,16 @@ begin
  for i:=1 to middlelist.SecRelCount do
   begin
    if(middlelist.SecRel[i-1].SymSecName='') then continue;
+   k:=1;
+   while(k<=templist2.SymTable.SymbolCount)do
+    begin
+     if(templist2.SymTable.SymbolSection[k-1]=middlelist.SecRel[i-1].SymSecName) then break;
+     inc(k);
+    end;
+   if(k>templist2.SymTable.SymbolCount) then continue;
    for j:=1 to middlelist.SecRel[i-1].SymCount do
     begin
-     k:=1;
-     while(k<=templist2.SymTable.SymbolCount)do
-      begin
-       if(templist2.SymTable.SymbolSection[k-1]=middlelist.SecRel[i-1].SymSecName) then break;
-       inc(k);
-      end;
-     if(k>templist2.SymTable.SymbolCount) then continue;
+     if(middlelist.SecRel[i-1].SymName[j-1]='') then continue;
      m:=1;
      while(m<=templist2.SymTable.SymbolCount)do
       begin
@@ -1882,16 +1857,8 @@ begin
      SetLength(templist2.Adjust.SrcName,templist2.Adjust.count);
      templist2.Adjust.SrcName[templist2.Adjust.count-1]:=templist2.SymTable.SymbolSection[k-1];
      SetLength(templist2.Adjust.SrcOffset,templist2.Adjust.count);
-     templist2.Adjust.SrcOffset[templist2.Adjust.Count-1]:=0;
-     a:=templist2.SymTable.SymbolIndex[k-1];
-     for b:=1 to templist2.SecContent[a-1].SecCount do
-      begin
-       if(templist2.SymTable.SymbolSection[k-1]=templist2.SecContent[a-1].SecName[b-1]) then
-        begin
-         templist2.Adjust.SrcOffset[templist2.Adjust.Count-1]:=
-         templist2.SecContent[a-1].SecOffset[b-1]+middlelist.SecRela[i-1].SymOffset[j-1]; break;
-        end;
-      end;
+     templist2.Adjust.SrcOffset[templist2.Adjust.Count-1]:=
+     templist2.SymTable.SymbolValue[k-1]+middlelist.SecRel[i-1].SymOffset[j-1];
      SetLength(templist2.Adjust.DestIndex,templist2.Adjust.count);
      templist2.Adjust.DestIndex[templist2.Adjust.Count-1]:=templist2.SymTable.SymbolIndex[m-1];
      SetLength(templist2.Adjust.DestName,templist2.Adjust.count);
@@ -3239,15 +3206,16 @@ begin
  for i:=1 to middlelist.SecRelaCount do
   begin
    if(middlelist.SecRela[i-1].SymSecName='') then continue;
+   k:=1;
+   while(k<=templist2.SymTable.SymbolCount)do
+    begin
+     if(templist2.SymTable.SymbolSection[k-1]=middlelist.SecRela[i-1].SymSecName) then break;
+     inc(k);
+    end;
+   if(k>templist2.SymTable.SymbolCount) then continue;
    for j:=1 to middlelist.SecRela[i-1].SymCount do
     begin
-     k:=1;
-     while(k<=templist2.SymTable.SymbolCount)do
-      begin
-       if(templist2.SymTable.SymbolSection[k-1]=middlelist.SecRela[i-1].SymSecName) then break;
-       inc(k);
-      end;
-     if(k>templist2.SymTable.SymbolCount) then continue;
+     if(middlelist.SecRela[i-1].SymName[j-1]='') then continue;
      m:=1;
      while(m<=templist2.SymTable.SymbolCount)do
       begin
@@ -3261,16 +3229,8 @@ begin
      SetLength(templist2.Adjust.SrcName,templist2.Adjust.count);
      templist2.Adjust.SrcName[templist2.Adjust.count-1]:=templist2.SymTable.SymbolSection[k-1];
      SetLength(templist2.Adjust.SrcOffset,templist2.Adjust.count);
-     templist2.Adjust.SrcOffset[templist2.Adjust.Count-1]:=0;
-     a:=templist2.SymTable.SymbolIndex[k-1];
-     for b:=1 to templist2.SecContent[a-1].SecCount do
-      begin
-       if(templist2.SymTable.SymbolSection[k-1]=templist2.SecContent[a-1].SecName[b-1]) then
-        begin
-         templist2.Adjust.SrcOffset[templist2.Adjust.Count-1]:=
-         templist2.SecContent[a-1].SecOffset[b-1]+middlelist.SecRela[i-1].SymOffset[j-1]; break;
-        end;
-      end;
+     templist2.Adjust.SrcOffset[templist2.Adjust.Count-1]:=
+     templist2.SymTable.SymbolValue[k-1]+middlelist.SecRela[i-1].SymOffset[j-1];
      SetLength(templist2.Adjust.DestIndex,templist2.Adjust.count);
      templist2.Adjust.DestIndex[templist2.Adjust.Count-1]:=templist2.SymTable.SymbolIndex[m-1];
      SetLength(templist2.Adjust.DestName,templist2.Adjust.count);
@@ -4812,7 +4772,7 @@ begin
    tempfinal.SecAddress[tempfinal.SecCount-1]:=0;
    tempfinal.SecIndex[tempfinal.SecCount-1]:=0;
    tempfinal.SecAlign[tempfinal.SecCount-1]:=ldfile.SecAlign[i-1];
-   if(ldfile.SecName[i-1]<>'.bss') and (ldfile.SecSize[i-1]>0) then
+   if(ldfile.SecName[i-1]<>'.bss') and (ldfile.SecName[i-1]<>'.tbss') and (ldfile.SecSize[i-1]>0) then
     begin
      tempfinal.SecSize[tempfinal.SecCount-1]:=ldfile.SecSize[i-1];
      tempfinal.SecContent[tempfinal.SecCount-1]:=tydq_allocmem(ldfile.SecSize[i-1]);
@@ -4825,14 +4785,9 @@ begin
        inc(partoffset,ldfile.SecContent[i-1].SecSize[j-1]);
       end;
     end
-   else if(ldfile.SecName[i-1]='.bss') then
-    begin
-     tempfinal.SecSize[tempfinal.SecCount-1]:=ldfile.SecSize[i-1];
-     tempfinal.SecContent[tempfinal.SecCount-1]:=nil;
-    end
    else
     begin
-     tempfinal.SecSize[tempfinal.SecCount-1]:=0;
+     tempfinal.SecSize[tempfinal.SecCount-1]:=ldfile.SecSize[i-1];
      tempfinal.SecContent[tempfinal.SecCount-1]:=nil;
     end;
   end;
@@ -9729,7 +9684,7 @@ begin
    tempfinal.SecAddress[tempfinal.SecCount-1]:=0;
    tempfinal.SecIndex[tempfinal.SecCount-1]:=0;
    tempfinal.SecAlign[tempfinal.SecCount-1]:=ldfile.SecAlign[i-1];
-   if(ldfile.SecName[i-1]<>'.bss') and (ldfile.SecSize[i-1]>0) then
+   if(ldfile.SecName[i-1]<>'.bss') and (ldfile.SecName[i-1]<>'.tbss') and (ldfile.SecSize[i-1]>0) then
     begin
      tempfinal.SecSize[tempfinal.SecCount-1]:=ldfile.SecSize[i-1];
      tempfinal.SecContent[tempfinal.SecCount-1]:=tydq_allocmem(ldfile.SecSize[i-1]);
@@ -9741,11 +9696,6 @@ begin
        (tempfinal.SecContent[tempfinal.SecCount-1]+partoffset)^,ldfile.SecContent[i-1].SecSize[j-1]);
        inc(partoffset,ldfile.SecContent[i-1].SecSize[j-1]);
       end;
-    end
-   else if(ldfile.SecName[i-1]='.bss') then
-    begin
-     tempfinal.SecSize[tempfinal.SecCount-1]:=ldfile.SecSize[i-1];
-     tempfinal.SecContent[tempfinal.SecCount-1]:=nil;
     end
    else
     begin
@@ -10543,10 +10493,6 @@ begin
       begin
        if(ld_formula_check_got(ldfile.Adjust.Formula[i-1])) then
         begin
-         if(isexternal) then
-         tempresult:=tempfinal.SecAddress[gotpltindex-1]
-         +writepos[2]*ldbit shl 2+ldfile.Adjust.Addend[i-1]
-         else
          tempresult:=tempfinal.SecAddress[gotindex-1]
          +writepos[1]*ldbit shl 2+ldfile.Adjust.Addend[i-1];
         end
@@ -11082,10 +11028,6 @@ begin
        tempnum3:=0; tempnum4:=1;
        if(ld_formula_check_got(ldfile.Adjust.Formula[i-1])) then
         begin
-         if(isexternal) then
-         tempresult:=(tempfinal.SecAddress[gotpltindex-1]
-         +writepos[2]*ldbit shl 2+ldfile.Adjust.Addend[i-1]-startoffset)
-         else
          tempresult:=(tempfinal.SecAddress[gotindex-1]
          +writepos[1]*ldbit shl 2+ldfile.Adjust.Addend[i-1]-startoffset);
         end
@@ -11258,10 +11200,6 @@ begin
       begin
        if(ld_formula_check_got(ldfile.Adjust.Formula[i-1])) then
         begin
-         if(isexternal) then
-         tempresult:=(tempfinal.SecAddress[gotpltindex-1]
-         +writepos[2]*ldbit shl 2+ldfile.Adjust.Addend[i-1]-startoffset)
-         else
          tempresult:=(tempfinal.SecAddress[gotindex-1]
          +writepos[1]*ldbit shl 2+ldfile.Adjust.Addend[i-1]-startoffset);
         end
