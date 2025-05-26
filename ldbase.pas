@@ -4,7 +4,7 @@ interface
 
 {$MODE Objfpc}
 
-uses binbase,sysutils,classes,convmem,strutils;
+uses binbase,sysutils,classes,convmem;
 
 type natuint=SizeUint;
      natint=SizeInt;
@@ -97,7 +97,6 @@ type natuint=SizeUint;
                             Count:Natuint;
                             end;
      ld_object_file_adjust=packed record
-                           SrcName:array of string;
                            SrcIndex:array of word;
                            SrcOffset:array of Natuint;
                            DestName:array of string;
@@ -143,7 +142,6 @@ type natuint=SizeUint;
                             EntryIndex:word;
                             EntryOffset:Natuint;
                             SecAddr:array of dword;
-                            SecAlign:array of Dword;
                             SecName:array of string;
                             SecType:array of byte;
                             SecContent:array of ld_object_file_section;
@@ -184,12 +182,9 @@ type natuint=SizeUint;
                           GotPltAddr:Natuint;
                           GotPltTable:array of Natuint;
                           GotPltSymbol:array of string;
-                          RelaAddr:Natuint;
-                          DynAddr:Natuint;
                           DynSym:ld_object_file_symbol_table;
                           Dynamic32:array of elf32_dynamic_entry;
                           Dynamic64:array of elf64_dynamic_entry;
-                          HashAddr:Natuint;
                           Hash:ld_hash;
                           end;
      ld_elf_writer_32=packed record
@@ -1231,6 +1226,7 @@ var i,j,k,m,n,a,b:natuint;
     templist2:ld_object_file_stage_2;
     partoffset,tempcount:Natuint;
     Value:word;
+label label1;
 begin
  {Generate the Object List to Stage 1}
  templist1.Count:=objlist.count;
@@ -1653,15 +1649,13 @@ begin
      SetLength(middlelist.SymTable.SymbolSection,middlelist.SymTable.SymbolCount);
      SetLength(middlelist.SymTable.SymbolSize,middlelist.SymTable.SymbolCount);
      SetLength(middlelist.SymTable.SymbolType,middlelist.SymTable.SymbolCount);
-     SetLength(middlelist.SymTable.SymbolIndex,middlelist.SymTable.SymbolCount);
      SetLength(middlelist.SymTable.SymbolValue,middlelist.SymTable.SymbolCount);
      SetLength(middlelist.SymTable.SymbolVisible,middlelist.SymTable.SymbolCount);
      SetLength(middlelist.SymTable.SymbolFileIndex,middlelist.SymTable.SymbolCount);
+     SetLength(middlelist.SymTable.SymbolIndex,middlelist.SymTable.SymbolCount);
      middlelist.SymTable.SymbolQuotedByMain[middlelist.SymTable.SymbolCount-1]:=false;
      middlelist.SymTable.SymbolBinding[middlelist.SymTable.SymbolCount-1]:=
      templist1.ObjFile[i-1].SymTable.SymbolBinding[j-1];
-     middlelist.SymTable.SymbolIndex[middlelist.SymTable.SymbolCount-1]:=
-     templist1.ObjFile[i-1].SymTable.SymbolIndex[j-1];
      middlelist.SymTable.SymbolName[middlelist.SymTable.SymbolCount-1]:=
      templist1.ObjFile[i-1].SymTable.SymbolName[j-1];
      middlelist.SymTable.SymbolSection[middlelist.SymTable.SymbolCount-1]:=
@@ -1675,6 +1669,8 @@ begin
      middlelist.SymTable.SymbolValue[middlelist.SymTable.SymbolCount-1]:=
      templist1.ObjFile[i-1].SymTable.SymbolValue[j-1];
      middlelist.SymTable.SymbolFileIndex[middlelist.SymTable.SymbolCount-1]:=i;
+     middlelist.SymTable.SymbolIndex[middlelist.SymTable.SymbolCount-1]:=
+     templist1.ObjFile[i-1].SymTable.SymbolIndex[j-1];
     end;
   end;
  {SmartLink the sections}
@@ -1712,11 +1708,9 @@ begin
    inc(templist2.SecCount);
    SetLength(templist2.SecName,templist2.SecCount);
    SetLength(templist2.SecSize,templist2.SecCount);
-   SetLength(templist2.SecAlign,templist2.SecCount);
    SetLength(templist2.SecContent,templist2.SecCount);
    templist2.SecName[templist2.SecCount-1]:=Order[i-1];
    templist2.SecSize[templist2.SecCount-1]:=0;
-   templist2.SecAlign[templist2.SecCount-1]:=0;
    templist2.SecContent[templist2.SecCount-1].SecCount:=0;
    partoffset:=0;
    for j:=1 to templist1.Count do
@@ -1731,7 +1725,6 @@ begin
         begin
          inc(templist2.SecContent[templist2.SecCount-1].SecCount);
          tempcount:=templist2.SecContent[templist2.SecCount-1].SecCount;
-         templist2.SecAlign[templist2.SecCount-1]:=ldbit shl 2;
          SetLength(templist2.SecContent[templist2.SecCount-1].SecName,tempcount);
          SetLength(templist2.SecContent[templist2.SecCount-1].SecOffset,tempcount);
          SetLength(templist2.SecContent[templist2.SecCount-1].SecContent,tempcount);
@@ -1759,12 +1752,13 @@ begin
    else templist2.SecSize[templist2.SecCount-1]:=partoffset;
   end;
  {Generate the symbol table}
+ templist2.EntryIndex:=0; templist2.EntryOffset:=0;
  templist2.SymTable.SymbolCount:=0;
  for i:=1 to middlelist.SymTable.SymbolCount do
   begin
    if(middlelist.SymTable.SymbolQuotedByMain[i-1]=SmartLinking) and
-   ((middlelist.SymTable.SymbolIndex[i-1]<>0) or (middlelist.SymTable.SymbolType[i-1]<>0)) and
-   (middlelist.SymTable.SymbolName[i-1]<>'') then
+   ((middlelist.SymTable.SymbolType[j-1]>0) or (middlelist.SymTable.SymbolIndex[j-1]>0))
+   and (middlelist.SymTable.SymbolName[i-1]<>'') then
     begin
      inc(templist2.SymTable.SymbolCount);
      SetLength(templist2.SymTable.SymbolSection,templist2.SymTable.SymbolCount);
@@ -1787,6 +1781,7 @@ begin
      middlelist.SymTable.SymbolSize[i-1];
      {Get the Index and Value of the Section}
      bool:=false; j:=1;
+     if(middlelist.SymTable.SymbolSection[i-1]='') then goto label1;
      while(j<=templist2.SecCount)do
       begin
        if(Copy(middlelist.SymTable.SymbolSection[i-1],1,
@@ -1804,27 +1799,32 @@ begin
         end;
       end
      else bool:=false;
+     label1:
      if(bool) and ((middlelist.SymTable.SymbolType[j-1]>0) or
-     (middlelist.SymTable.SymbolIndex[j-1]>0)) then
+     (middlelist.SymTable.SymbolIndex[j-1]>0)) and (middlelist.SymTable.SymbolSection[i-1]<>'') then
       begin
        SetLength(templist2.SymTable.SymbolIndex,templist2.SymTable.SymbolCount);
        templist2.SymTable.SymbolIndex[templist2.SymTable.SymbolCount-1]:=j;
        SetLength(templist2.SymTable.SymbolValue,templist2.SymTable.SymbolCount);
        templist2.SymTable.SymbolValue[templist2.SymTable.SymbolCount-1]:=
        templist2.SecContent[j-1].SecOffset[k-1]+middlelist.SymTable.SymbolValue[i-1];
+       if(templist2.SymTable.SymbolName[templist2.SymTable.SymbolCount-1]=EntryName) and
+       (templist2.EntryIndex=0) and (templist2.EntryOffset=0) then
+        begin
+         templist2.EntryIndex:=j;
+         templist2.EntryOffset:=
+         templist2.SecContent[j-1].SecOffset[k-1]+middlelist.SymTable.SymbolValue[i-1];
+        end;
       end
-     else
+     else if((middlelist.SymTable.SymbolType[j-1]>0) or
+     (middlelist.SymTable.SymbolIndex[j-1]>0)) and (middlelist.SymTable.SymbolSection[i-1]='') then
       begin
-       dec(templist2.SymTable.SymbolCount);
-       SetLength(templist2.SymTable.SymbolSection,templist2.SymTable.SymbolCount);
-       SetLength(templist2.SymTable.SymbolValue,templist2.SymTable.SymbolCount);
-       SetLength(templist2.SymTable.SymbolSize,templist2.SymTable.SymbolCount);
-       SetLength(templist2.SymTable.SymbolBinding,templist2.SymTable.SymbolCount);
        SetLength(templist2.SymTable.SymbolIndex,templist2.SymTable.SymbolCount);
-       SetLength(templist2.SymTable.SymbolVisible,templist2.SymTable.SymbolCount);
-       SetLength(templist2.SymTable.SymbolName,templist2.SymTable.SymbolCount);
-       SetLength(templist2.SymTable.SymbolType,templist2.SymTable.SymbolCount);
-      end;
+       templist2.SymTable.SymbolIndex[templist2.SymTable.SymbolCount-1]:=0;
+       SetLength(templist2.SymTable.SymbolValue,templist2.SymTable.SymbolCount);
+       templist2.SymTable.SymbolValue[templist2.SymTable.SymbolCount-1]:=0;
+      end
+     else dec(templist2.SymTable.SymbolCount);
     end;
   end;
  {Initialize the adjustment}
@@ -1842,6 +1842,18 @@ begin
    if(k>templist2.SymTable.SymbolCount) then continue;
    for j:=1 to middlelist.SecRel[i-1].SymCount do
     begin
+     if(ldarch=elf_machine_riscv) and
+     (middlelist.SecRel[i-1].SymType[j-1]=elf_reloc_riscv_align) then continue
+     else if(ldarch=elf_machine_riscv) and
+     (middlelist.SecRel[i-1].SymType[j-1]=elf_reloc_riscv_relax) then
+      begin
+       templist2.Adjust.AdjustRelax[templist2.Adjust.Count-1]:=true; continue;
+      end
+     else if(ldarch=elf_machine_loongarch) and
+     (middlelist.SecRel[i-1].SymType[j-1]=elf_reloc_loongarch_relax) then
+      begin
+       templist2.Adjust.AdjustRelax[templist2.Adjust.Count-1]:=true; continue;
+      end;
      if(middlelist.SecRel[i-1].SymName[j-1]='') then continue;
      m:=1;
      while(m<=templist2.SymTable.SymbolCount)do
@@ -1854,8 +1866,6 @@ begin
      inc(templist2.Adjust.Count);
      SetLength(templist2.Adjust.SrcIndex,templist2.Adjust.count);
      templist2.Adjust.SrcIndex[templist2.Adjust.count-1]:=templist2.SymTable.SymbolIndex[k-1];
-     SetLength(templist2.Adjust.SrcName,templist2.Adjust.count);
-     templist2.Adjust.SrcName[templist2.Adjust.count-1]:=templist2.SymTable.SymbolSection[k-1];
      SetLength(templist2.Adjust.SrcOffset,templist2.Adjust.count);
      templist2.Adjust.SrcOffset[templist2.Adjust.Count-1]:=
      templist2.SymTable.SymbolValue[k-1]+middlelist.SecRel[i-1].SymOffset[j-1];
@@ -3216,6 +3226,18 @@ begin
    for j:=1 to middlelist.SecRela[i-1].SymCount do
     begin
      if(middlelist.SecRela[i-1].SymName[j-1]='') then continue;
+     if(ldarch=elf_machine_riscv) and
+     (middlelist.SecRela[i-1].SymType[j-1]=elf_reloc_riscv_align) then continue
+     else if(ldarch=elf_machine_riscv) and
+     (middlelist.SecRela[i-1].SymType[j-1]=elf_reloc_riscv_relax) then
+      begin
+       templist2.Adjust.AdjustRelax[templist2.Adjust.Count-1]:=true; continue;
+      end
+     else if(ldarch=elf_machine_loongarch) and
+     (middlelist.SecRela[i-1].SymType[j-1]=elf_reloc_loongarch_relax) then
+      begin
+       templist2.Adjust.AdjustRelax[templist2.Adjust.Count-1]:=true; continue;
+      end;
      m:=1;
      while(m<=templist2.SymTable.SymbolCount)do
       begin
@@ -3226,15 +3248,13 @@ begin
      inc(templist2.Adjust.Count);
      SetLength(templist2.Adjust.SrcIndex,templist2.Adjust.count);
      templist2.Adjust.SrcIndex[templist2.Adjust.count-1]:=templist2.SymTable.SymbolIndex[k-1];
-     SetLength(templist2.Adjust.SrcName,templist2.Adjust.count);
-     templist2.Adjust.SrcName[templist2.Adjust.count-1]:=templist2.SymTable.SymbolSection[k-1];
      SetLength(templist2.Adjust.SrcOffset,templist2.Adjust.count);
      templist2.Adjust.SrcOffset[templist2.Adjust.Count-1]:=
      templist2.SymTable.SymbolValue[k-1]+middlelist.SecRela[i-1].SymOffset[j-1];
-     SetLength(templist2.Adjust.DestIndex,templist2.Adjust.count);
-     templist2.Adjust.DestIndex[templist2.Adjust.Count-1]:=templist2.SymTable.SymbolIndex[m-1];
      SetLength(templist2.Adjust.DestName,templist2.Adjust.count);
      templist2.Adjust.DestName[templist2.Adjust.Count-1]:=templist2.SymTable.SymbolSection[m-1];
+     SetLength(templist2.Adjust.DestIndex,templist2.Adjust.count);
+     templist2.Adjust.DestIndex[templist2.Adjust.Count-1]:=templist2.SymTable.SymbolIndex[m-1];
      SetLength(templist2.Adjust.DestOffset,templist2.Adjust.count);
      templist2.Adjust.DestOffset[templist2.Adjust.Count-1]:=templist2.SymTable.SymbolValue[m-1];
      SetLength(templist2.Adjust.AdjustName,templist2.Adjust.Count);
@@ -4577,16 +4597,15 @@ begin
   end;
  {Delete the Unsuitable Symbol}
  i:=1;
+ SetLength(templist2.SymTable.SymbolSection,0);
  while(i<=templist2.SymTable.SymbolCount)do
   begin
    if(Copy(templist2.SymTable.SymbolName[i-1],1,1)='.')
    or(Copy(templist2.SymTable.SymbolName[i-1],1,1)='$')
    or(Copy(templist2.SymTable.SymbolName[i-1],1,6)='RTTI_$')
-   or(Copy(templist2.SymTable.SymbolName[i-1],1,6)='INIT_$')
-   or(templist2.SymTable.SymbolName[i-1]='') then
+   or(Copy(templist2.SymTable.SymbolName[i-1],1,6)='INIT_$') then
     begin
      dec(templist2.SymTable.SymbolCount);
-     Delete(templist2.SymTable.SymbolSection,i-1,1);
      Delete(templist2.SymTable.SymbolValue,i-1,1);
      Delete(templist2.SymTable.SymbolSize,i-1,1);
      Delete(templist2.SymTable.SymbolBinding,i-1,1);
@@ -4597,62 +4616,6 @@ begin
      continue;
     end;
    inc(i);
-  end;
- {Delete the Repeated Adjustment}
- i:=1;
- while(i<=templist2.Adjust.count)do
-  begin
-   if(templist2.Adjust.DestName[i-1]='') or
-   ((templist2.Adjust.AdjustType[i-1]=elf_reloc_riscv_align) and (ldarch=elf_machine_riscv)) then
-    begin
-     Delete(templist2.Adjust.AdjustRelax,i-1,1);
-     Delete(templist2.Adjust.Formula,i-1,1); Delete(templist2.Adjust.SrcOffset,i-1,1);
-     Delete(templist2.Adjust.SrcIndex,i-1,1); Delete(templist2.Adjust.SrcName,i-1,1);
-     Delete(templist2.Adjust.DestIndex,i-1,1); Delete(templist2.Adjust.DestOffset,i-1,1);
-     Delete(templist2.Adjust.DestName,i-1,1); Delete(templist2.Adjust.AdjustFunc,i-1,1);
-     Delete(templist2.Adjust.AdjustType,i-1,1); Delete(templist2.Adjust.Addend,i-1,1);
-     dec(templist2.Adjust.count);
-     continue;
-    end;
-   j:=i-1;
-   if(j>1) and ((templist2.Adjust.SrcIndex[i-1]=templist2.Adjust.SrcIndex[j-1]) and
-   (templist2.Adjust.SrcOffset[i-1]=templist2.Adjust.SrcOffset[j-1])) then
-    begin
-     if(ldarch=elf_machine_riscv) and (templist2.Adjust.AdjustType[i-1]=elf_reloc_riscv_relax) then
-     templist2.Adjust.AdjustRelax[j-1]:=true
-     else if(ldarch=elf_machine_loongarch) and
-     (templist2.Adjust.AdjustType[i-1]=elf_reloc_loongarch_relax) then
-      templist2.Adjust.AdjustRelax[j-1]:=true;
-      Delete(templist2.Adjust.AdjustRelax,i-1,1);
-      Delete(templist2.Adjust.Formula,i-1,1); Delete(templist2.Adjust.SrcOffset,i-1,1);
-      Delete(templist2.Adjust.SrcIndex,i-1,1); Delete(templist2.Adjust.SrcName,i-1,1);
-      Delete(templist2.Adjust.DestIndex,i-1,1); Delete(templist2.Adjust.DestOffset,i-1,1);
-      Delete(templist2.Adjust.DestName,i-1,1); Delete(templist2.Adjust.AdjustFunc,i-1,1);
-      Delete(templist2.Adjust.AdjustType,i-1,1); Delete(templist2.Adjust.Addend,i-1,1);
-      dec(templist2.Adjust.count);
-      continue;
-    end;
-   inc(i);
-  end;
- {Indicate the Entry Index and offset in file}
- templist2.EntryIndex:=0; templist2.EntryOffset:=0;
- for i:=1 to templist2.SymTable.SymbolCount do
-  begin
-   if(templist2.SymTable.SymbolName[i-1]=EntryName) then
-    begin
-     bool:=false;
-     j:=templist2.SymTable.SymbolIndex[i-1];
-     for k:=1 to templist2.SecContent[j-1].SecCount do
-      begin
-       if(bool=false) and
-       (templist2.SecContent[j-1].SecName[k-1]=templist2.SymTable.SymbolSection[i-1]) then
-        begin
-         templist2.EntryIndex:=j; templist2.EntryOffset:=templist2.SecContent[j-1].SecOffset[k-1];
-         break;
-        end;
-      end;
-     if(bool) then break;
-    end;
   end;
  {Free the Memory of Stage 1}
  for i:=1 to templist1.Count do
@@ -4771,7 +4734,6 @@ begin
    tempfinal.SecName[tempfinal.SecCount-1]:='.debug_frame';
    tempfinal.SecAddress[tempfinal.SecCount-1]:=0;
    tempfinal.SecIndex[tempfinal.SecCount-1]:=0;
-   tempfinal.SecAlign[tempfinal.SecCount-1]:=ldfile.SecAlign[i-1];
    if(ldfile.SecName[i-1]<>'.bss') and (ldfile.SecName[i-1]<>'.tbss') and (ldfile.SecSize[i-1]>0) then
     begin
      tempfinal.SecSize[tempfinal.SecCount-1]:=ldfile.SecSize[i-1];
@@ -4924,31 +4886,19 @@ begin
     begin
      inc(tempfinal.DynSym.SymbolCount);
      SetLength(tempfinal.DynSym.SymbolBinding,tempfinal.DynSym.SymbolCount);
-     tempfinal.DynSym.SymbolBinding[tempfinal.DynSym.SymbolCount-1]:=
-     ldfile.SymTable.SymbolBinding[j-1];
+     tempfinal.DynSym.SymbolBinding[tempfinal.DynSym.SymbolCount-1]:=ldfile.SymTable.SymbolBinding[j-1];
      SetLength(tempfinal.DynSym.SymbolIndex,tempfinal.DynSym.SymbolCount);
-     tempfinal.DynSym.SymbolIndex[tempfinal.DynSym.SymbolCount-1]:=
-     ldfile.SymTable.SymbolIndex[j-1];
+     tempfinal.DynSym.SymbolIndex[tempfinal.DynSym.SymbolCount-1]:=0;
      SetLength(tempfinal.DynSym.SymbolName,tempfinal.DynSym.SymbolCount);
-     tempfinal.DynSym.SymbolName[tempfinal.DynSym.SymbolCount-1]:=
-     ldfile.SymTable.SymbolName[j-1];
-     SetLength(tempfinal.DynSym.SymbolSection,tempfinal.DynSym.SymbolCount);
-     tempfinal.DynSym.SymbolSection[tempfinal.DynSym.SymbolCount-1]:=
-     ldfile.SymTable.SymbolSection[j-1];
+     tempfinal.DynSym.SymbolName[tempfinal.DynSym.SymbolCount-1]:=ldfile.SymTable.SymbolName[j-1];
      SetLength(tempfinal.DynSym.SymbolSize,tempfinal.DynSym.SymbolCount);
-     tempfinal.DynSym.SymbolSize[tempfinal.DynSym.SymbolCount-1]:=
-     ldfile.SymTable.SymbolSize[j-1];
+     tempfinal.DynSym.SymbolSize[tempfinal.DynSym.SymbolCount-1]:=0;
      SetLength(tempfinal.DynSym.SymbolType,tempfinal.DynSym.SymbolCount);
-     tempfinal.DynSym.SymbolType[tempfinal.DynSym.SymbolCount-1]:=
-     ldfile.SymTable.SymbolType[j-1];
+     tempfinal.DynSym.SymbolType[tempfinal.DynSym.SymbolCount-1]:=ldfile.SymTable.SymbolType[j-1];
      SetLength(tempfinal.DynSym.SymbolValue,tempfinal.DynSym.SymbolCount);
-     tempfinal.DynSym.SymbolValue[tempfinal.DynSym.SymbolCount-1]:=
-     ldfile.SymTable.SymbolValue[j-1];
+     tempfinal.DynSym.SymbolValue[tempfinal.DynSym.SymbolCount-1]:=0;
      SetLength(tempfinal.DynSym.SymbolVisible,tempfinal.DynSym.SymbolCount);
-     tempfinal.DynSym.SymbolVisible[tempfinal.DynSym.SymbolCount-1]:=
-     ldfile.SymTable.SymbolVisible[j-1];
-     SetLength(tempfinal.GotPltSymbol,length(tempfinal.GotPltSymbol)+1);
-     tempfinal.GotPltSymbol[length(tempfinal.GotPltSymbol)-1]:=ldfile.SymTable.SymbolName[j-1];
+     tempfinal.DynSym.SymbolVisible[tempfinal.DynSym.SymbolCount-1]:=ldfile.SymTable.SymbolVisible[j-1];
     end;
   end;
  {Set the Got Table and Got Plt Table}
@@ -7097,10 +7047,10 @@ begin
        if(isexternal) or (ldfile.Adjust.DestIndex[i-1]=0) then
         begin
          SetLength(tempfinal.Rela.SymOffset,tempfinal.Rela.SymCount);
-         tempfinal.Rela.SymOffset[offset2-1]:=tempfinal.GotPltAddr+writepos[2]*ldbit shl 2;
+         tempfinal.Rela.SymOffset[tempfinal.Rela.SymCount-1]:=tempfinal.GotPltAddr+writepos[2]*ldbit shl 2;
          tempfinal.GotPltTable[writepos[2]]:=0;
-         tempfinal.Rela.SymAddend[offset2-1]:=0;
-         tempfinal.Rela.SymType[offset2-1]:=1;
+         tempfinal.Rela.SymAddend[tempfinal.Rela.SymCount-1]:=0;
+         tempfinal.Rela.SymType[tempfinal.Rela.SymCount-1]:=1;
          k:=1;
          while(k<=tempfinal.DynSym.SymbolCount)do
           begin
@@ -7109,20 +7059,20 @@ begin
           end;
          if(k<=tempfinal.DynSym.SymbolCount) and (ldarch=elf_machine_386) then
           begin
-           tempfinal.Rela.SymType[offset2-1]:=k shl 8+tempfinal.Rela.SymType[offset2-1];
+           tempfinal.Rela.SymType[tempfinal.Rela.SymCount-1]:=k shl 8+tempfinal.Rela.SymType[tempfinal.Rela.SymCount-1];
           end
          else if(k<=tempfinal.DynSym.SymbolCount) and (ldarch=elf_machine_x86_64) then
           begin
-           tempfinal.Rela.SymType[offset2-1]:=k shl 32+tempfinal.Rela.SymType[offset2-1];
+           tempfinal.Rela.SymType[tempfinal.Rela.SymCount-1]:=k shl 32+tempfinal.Rela.SymType[tempfinal.Rela.SymCount-1];
           end;
         end
        else
         begin
          SetLength(tempfinal.Rela.SymOffset,tempfinal.Rela.SymCount);
-         tempfinal.Rela.SymOffset[offset1-1]:=tempfinal.GotAddr+writepos[1]*ldbit shl 2;
+         tempfinal.Rela.SymOffset[tempfinal.Rela.SymCount-1]:=tempfinal.GotAddr+writepos[1]*ldbit shl 2;
          tempfinal.GotTable[writepos[1]]:=endoffset+ldfile.Adjust.Addend[i-1];
-         tempfinal.Rela.SymAddend[offset1-1]:=endoffset+ldfile.Adjust.Addend[i-1];
-         tempfinal.Rela.SymType[offset1-1]:=8;
+         tempfinal.Rela.SymAddend[tempfinal.Rela.SymCount-1]:=endoffset+ldfile.Adjust.Addend[i-1];
+         tempfinal.Rela.SymType[tempfinal.Rela.SymCount-1]:=8;
         end;
       end;
      if(Natuint(changeptr)=ldfile.Adjust.Srcoffset[i-1]) then continue;
@@ -7183,10 +7133,10 @@ begin
        if(isexternal) or (ldfile.Adjust.DestIndex[i-1]=0) then
         begin
          SetLength(tempfinal.Rela.SymOffset,tempfinal.Rela.SymCount);
-         tempfinal.Rela.SymOffset[offset2-1]:=tempfinal.GotPltAddr+writepos[2]*ldbit shl 2;
+         tempfinal.Rela.SymOffset[tempfinal.Rela.SymCount-1]:=tempfinal.GotPltAddr+writepos[2]*ldbit shl 2;
          tempfinal.GotPltTable[writepos[2]]:=endoffset+ldfile.Adjust.Addend[i-1];
-         tempfinal.Rela.SymAddend[offset2-1]:=endoffset+ldfile.Adjust.Addend[i-1];
-         tempfinal.Rela.SymType[offset2-1]:=elf_reloc_arm_absolute_32bit;
+         tempfinal.Rela.SymAddend[tempfinal.Rela.SymCount-1]:=endoffset+ldfile.Adjust.Addend[i-1];
+         tempfinal.Rela.SymType[tempfinal.Rela.SymCount-1]:=elf_reloc_arm_absolute_32bit;
          k:=1;
          while(k<=tempfinal.DynSym.SymbolCount)do
           begin
@@ -7195,16 +7145,16 @@ begin
           end;
          if(k<=tempfinal.DynSym.SymbolCount) then
           begin
-           tempfinal.Rela.SymType[offset2-1]:=k shl 8+tempfinal.Rela.SymType[offset2-1];
+           tempfinal.Rela.SymType[tempfinal.Rela.SymCount-1]:=k shl 8+tempfinal.Rela.SymType[tempfinal.Rela.SymCount-1];
           end;
         end
        else
         begin
          SetLength(tempfinal.Rela.SymOffset,tempfinal.Rela.SymCount);
-         tempfinal.Rela.SymOffset[offset1-1]:=tempfinal.GotAddr+writepos[1]*ldbit shl 2;
+         tempfinal.Rela.SymOffset[tempfinal.Rela.SymCount-1]:=tempfinal.GotAddr+writepos[1]*ldbit shl 2;
          tempfinal.GotTable[writepos[1]]:=endoffset+ldfile.Adjust.Addend[i-1];
-         tempfinal.Rela.SymAddend[offset1-1]:=endoffset+ldfile.Adjust.Addend[i-1];
-         tempfinal.Rela.SymType[offset1-1]:=elf_reloc_arm_relative;
+         tempfinal.Rela.SymAddend[tempfinal.Rela.SymCount-1]:=endoffset+ldfile.Adjust.Addend[i-1];
+         tempfinal.Rela.SymType[tempfinal.Rela.SymCount-1]:=elf_reloc_arm_relative;
         end;
       end;
      negative:=false;
@@ -7450,10 +7400,10 @@ begin
        if(isexternal) or (ldfile.Adjust.DestIndex[i-1]=0) then
         begin
          SetLength(tempfinal.Rela.SymOffset,tempfinal.Rela.SymCount);
-         tempfinal.Rela.SymOffset[offset2-1]:=tempfinal.GotPltAddr+writepos[2]*ldbit shl 2;
+         tempfinal.Rela.SymOffset[tempfinal.Rela.SymCount-1]:=tempfinal.GotPltAddr+writepos[2]*ldbit shl 2;
          tempfinal.GotPltTable[writepos[2]]:=0;
-         tempfinal.Rela.SymAddend[offset2-1]:=0;
-         tempfinal.Rela.SymType[offset2-1]:=elf_reloc_aarch64_absolute_64bit;
+         tempfinal.Rela.SymAddend[tempfinal.Rela.SymCount-1]:=0;
+         tempfinal.Rela.SymType[tempfinal.Rela.SymCount-1]:=elf_reloc_aarch64_absolute_64bit;
          k:=1;
          while(k<=tempfinal.DynSym.SymbolCount)do
           begin
@@ -7462,16 +7412,16 @@ begin
           end;
          if(k<=tempfinal.DynSym.SymbolCount) then
           begin
-           tempfinal.Rela.SymType[offset2-1]:=k shl 32+tempfinal.Rela.SymType[offset2-1];
+           tempfinal.Rela.SymType[tempfinal.Rela.SymCount-1]:=k shl 32+tempfinal.Rela.SymType[tempfinal.Rela.SymCount-1];
           end;
         end
        else
         begin
          SetLength(tempfinal.Rela.SymOffset,tempfinal.Rela.SymCount);
-         tempfinal.Rela.SymOffset[offset1-1]:=tempfinal.GotAddr+writepos[1]*ldbit shl 2;
+         tempfinal.Rela.SymOffset[tempfinal.Rela.SymCount-1]:=tempfinal.GotAddr+writepos[1]*ldbit shl 2;
          tempfinal.GotTable[writepos[1]]:=endoffset+ldfile.Adjust.Addend[i-1];
-         tempfinal.Rela.SymAddend[offset1-1]:=endoffset+ldfile.Adjust.Addend[i-1];
-         tempfinal.Rela.SymType[offset1-1]:=elf_reloc_aarch64_relative;
+         tempfinal.Rela.SymAddend[tempfinal.Rela.SymCount-1]:=endoffset+ldfile.Adjust.Addend[i-1];
+         tempfinal.Rela.SymType[tempfinal.Rela.SymCount-1]:=elf_reloc_aarch64_relative;
         end;
       end;
      negative:=false;
@@ -7759,13 +7709,13 @@ begin
        if(isexternal) or (ldfile.Adjust.DestIndex[i-1]=0) then
         begin
          SetLength(tempfinal.Rela.SymOffset,tempfinal.Rela.SymCount);
-         tempfinal.Rela.SymOffset[offset2-1]:=tempfinal.GotPltAddr+writepos[2]*ldbit shl 2;
+         tempfinal.Rela.SymOffset[tempfinal.Rela.SymCount-1]:=tempfinal.GotPltAddr+writepos[2]*ldbit shl 2;
          tempfinal.GotPltTable[writepos[2]]:=0;
-         tempfinal.Rela.SymAddend[offset2-1]:=0;
+         tempfinal.Rela.SymAddend[tempfinal.Rela.SymCount-1]:=0;
          if(ldbit=1) then
-         tempfinal.Rela.SymType[offset2-1]:=elf_reloc_riscv_32bit
+         tempfinal.Rela.SymType[tempfinal.Rela.SymCount-1]:=elf_reloc_riscv_32bit
          else if(ldbit=2) then
-         tempfinal.Rela.SymType[offset2-1]:=elf_reloc_riscv_64bit;
+         tempfinal.Rela.SymType[tempfinal.Rela.SymCount-1]:=elf_reloc_riscv_64bit;
          k:=1;
          while(k<=tempfinal.DynSym.SymbolCount)do
           begin
@@ -7774,20 +7724,20 @@ begin
           end;
          if(k<=tempfinal.DynSym.SymbolCount) and (ldbit=1) then
           begin
-           tempfinal.Rela.SymType[offset2-1]:=k shl 8+tempfinal.Rela.SymType[offset2-1];
+           tempfinal.Rela.SymType[tempfinal.Rela.SymCount-1]:=k shl 8+tempfinal.Rela.SymType[tempfinal.Rela.SymCount-1];
           end
          else if(k<=tempfinal.DynSym.SymbolCount) and (ldbit=2) then
           begin
-           tempfinal.Rela.SymType[offset2-1]:=k shl 32+tempfinal.Rela.SymType[offset2-1];
+           tempfinal.Rela.SymType[tempfinal.Rela.SymCount-1]:=k shl 32+tempfinal.Rela.SymType[tempfinal.Rela.SymCount-1];
           end;
         end
        else
         begin
          SetLength(tempfinal.Rela.SymOffset,tempfinal.Rela.SymCount);
-         tempfinal.Rela.SymOffset[offset1-1]:=tempfinal.GotAddr+writepos[1]*ldbit shl 2;
+         tempfinal.Rela.SymOffset[tempfinal.Rela.SymCount-1]:=tempfinal.GotAddr+writepos[1]*ldbit shl 2;
          tempfinal.GotTable[writepos[1]]:=endoffset+ldfile.Adjust.Addend[i-1];
-         tempfinal.Rela.SymAddend[offset1-1]:=endoffset+ldfile.Adjust.Addend[i-1];
-         tempfinal.Rela.SymType[offset1-1]:=elf_reloc_riscv_relative;
+         tempfinal.Rela.SymAddend[tempfinal.Rela.SymCount-1]:=endoffset+ldfile.Adjust.Addend[i-1];
+         tempfinal.Rela.SymType[tempfinal.Rela.SymCount-1]:=elf_reloc_riscv_relative;
         end;
       end;
      if(tempformula.mask=0) then
@@ -7941,13 +7891,13 @@ begin
        if(isexternal) or (ldfile.Adjust.DestIndex[i-1]=0) then
         begin
          SetLength(tempfinal.Rela.SymOffset,tempfinal.Rela.SymCount);
-         tempfinal.Rela.SymOffset[offset2-1]:=tempfinal.GotPltAddr+writepos[2]*ldbit shl 2;
+         tempfinal.Rela.SymOffset[tempfinal.Rela.SymCount-1]:=tempfinal.GotPltAddr+writepos[2]*ldbit shl 2;
          tempfinal.GotPltTable[writepos[2]]:=0;
-         tempfinal.Rela.SymAddend[offset2-1]:=0;
+         tempfinal.Rela.SymAddend[tempfinal.Rela.SymCount-1]:=0;
          if(ldbit=1) then
-         tempfinal.Rela.SymType[offset2-1]:=elf_reloc_loongarch_32bit
+         tempfinal.Rela.SymType[tempfinal.Rela.SymCount-1]:=elf_reloc_loongarch_32bit
          else if(ldbit=2) then
-         tempfinal.Rela.SymType[offset2-1]:=elf_reloc_loongarch_64bit;
+         tempfinal.Rela.SymType[tempfinal.Rela.SymCount-1]:=elf_reloc_loongarch_64bit;
          k:=1;
          while(k<=tempfinal.DynSym.SymbolCount)do
           begin
@@ -7956,20 +7906,20 @@ begin
           end;
          if(k<=tempfinal.DynSym.SymbolCount) and (ldbit=1) then
           begin
-           tempfinal.Rela.SymType[offset2-1]:=k shl 8+tempfinal.Rela.SymType[offset2-1];
+           tempfinal.Rela.SymType[tempfinal.Rela.SymCount-1]:=k shl 8+tempfinal.Rela.SymType[tempfinal.Rela.SymCount-1];
           end
          else if(k<=tempfinal.DynSym.SymbolCount) and (ldbit=2) then
           begin
-           tempfinal.Rela.SymType[offset2-1]:=k shl 32+tempfinal.Rela.SymType[offset2-1];
+           tempfinal.Rela.SymType[tempfinal.Rela.SymCount-1]:=k shl 32+tempfinal.Rela.SymType[tempfinal.Rela.SymCount-1];
           end;
         end
        else
         begin
          SetLength(tempfinal.Rela.SymOffset,tempfinal.Rela.SymCount);
-         tempfinal.Rela.SymOffset[offset1-1]:=tempfinal.GotAddr+writepos[1]*ldbit shl 2;
+         tempfinal.Rela.SymOffset[tempfinal.Rela.SymCount-1]:=tempfinal.GotAddr+writepos[1]*ldbit shl 2;
          tempfinal.GotTable[writepos[1]]:=endoffset+ldfile.Adjust.Addend[i-1];
-         tempfinal.Rela.SymAddend[offset1-1]:=endoffset+ldfile.Adjust.Addend[i-1];
-         tempfinal.Rela.SymType[offset1-1]:=elf_reloc_loongarch_relative;
+         tempfinal.Rela.SymAddend[tempfinal.Rela.SymCount-1]:=endoffset+ldfile.Adjust.Addend[i-1];
+         tempfinal.Rela.SymType[tempfinal.Rela.SymCount-1]:=elf_reloc_loongarch_relative;
         end;
       end;
      if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_loongarch_add_8bit) or
@@ -9641,7 +9591,6 @@ begin
    SetLength(tempfinal.SecContent,tempfinal.SecCount);
    SetLength(tempfinal.SecIndex,tempfinal.SecCount);
    SetLength(tempfinal.SecAddress,tempfinal.SecCount);
-   SetLength(tempfinal.SecAlign,tempfinal.SecCount);
    SetLength(tempfinal.SecSize,tempfinal.SecCount);
    if(ldfile.SecName[i-1]='.text') then
    tempfinal.SecName[tempfinal.SecCount-1]:='.text'
@@ -9683,7 +9632,6 @@ begin
    tempfinal.SecName[tempfinal.SecCount-1]:='.debug_frame';
    tempfinal.SecAddress[tempfinal.SecCount-1]:=0;
    tempfinal.SecIndex[tempfinal.SecCount-1]:=0;
-   tempfinal.SecAlign[tempfinal.SecCount-1]:=ldfile.SecAlign[i-1];
    if(ldfile.SecName[i-1]<>'.bss') and (ldfile.SecName[i-1]<>'.tbss') and (ldfile.SecSize[i-1]>0) then
     begin
      tempfinal.SecSize[tempfinal.SecCount-1]:=ldfile.SecSize[i-1];
@@ -11681,10 +11629,10 @@ begin
        if(isexternal) or (ldfile.Adjust.DestIndex[i-1]=0) then
         begin
          SetLength(tempfinal.Rela.SymOffset,tempfinal.Rela.SymCount);
-         tempfinal.Rela.SymOffset[offset2-1]:=tempfinal.GotPltAddr+writepos[2]*ldbit shl 2;
+         tempfinal.Rela.SymOffset[tempfinal.Rela.SymCount-1]:=tempfinal.GotPltAddr+writepos[2]*ldbit shl 2;
          tempfinal.GotPltTable[writepos[2]]:=0;
-         tempfinal.Rela.SymAddend[offset2-1]:=0;
-         tempfinal.Rela.SymType[offset2-1]:=1;
+         tempfinal.Rela.SymAddend[tempfinal.Rela.SymCount-1]:=0;
+         tempfinal.Rela.SymType[tempfinal.Rela.SymCount-1]:=1;
          k:=1;
          while(k<=tempfinal.DynSym.SymbolCount)do
           begin
@@ -11693,20 +11641,20 @@ begin
           end;
          if(k<=tempfinal.DynSym.SymbolCount) and (ldarch=elf_machine_386) then
           begin
-           tempfinal.Rela.SymType[offset2-1]:=k shl 8+tempfinal.Rela.SymType[offset2-1];
+           tempfinal.Rela.SymType[tempfinal.Rela.SymCount-1]:=k shl 8+tempfinal.Rela.SymType[tempfinal.Rela.SymCount-1];
           end
          else if(k<=tempfinal.DynSym.SymbolCount) and (ldarch=elf_machine_x86_64) then
           begin
-           tempfinal.Rela.SymType[offset2-1]:=k shl 32+tempfinal.Rela.SymType[offset2-1];
+           tempfinal.Rela.SymType[tempfinal.Rela.SymCount-1]:=k shl 32+tempfinal.Rela.SymType[tempfinal.Rela.SymCount-1];
           end;
         end
        else
         begin
          SetLength(tempfinal.Rela.SymOffset,tempfinal.Rela.SymCount);
-         tempfinal.Rela.SymOffset[offset1-1]:=tempfinal.GotAddr+writepos[1]*ldbit shl 2;
+         tempfinal.Rela.SymOffset[tempfinal.Rela.SymCount-1]:=tempfinal.GotAddr+writepos[1]*ldbit shl 2;
          tempfinal.GotTable[writepos[1]]:=endoffset+ldfile.Adjust.Addend[i-1];
-         tempfinal.Rela.SymAddend[offset1-1]:=endoffset+ldfile.Adjust.Addend[i-1];
-         tempfinal.Rela.SymType[offset1-1]:=8;
+         tempfinal.Rela.SymAddend[tempfinal.Rela.SymCount-1]:=endoffset+ldfile.Adjust.Addend[i-1];
+         tempfinal.Rela.SymType[tempfinal.Rela.SymCount-1]:=8;
         end;
       end;
      if(Natuint(changeptr)=ldfile.Adjust.Srcoffset[i-1]) then continue;
@@ -11767,10 +11715,10 @@ begin
        if(isexternal) or (ldfile.Adjust.DestIndex[i-1]=0) then
         begin
          SetLength(tempfinal.Rela.SymOffset,tempfinal.Rela.SymCount);
-         tempfinal.Rela.SymOffset[offset2-1]:=tempfinal.GotPltAddr+writepos[2]*ldbit shl 2;
+         tempfinal.Rela.SymOffset[tempfinal.Rela.SymCount-1]:=tempfinal.GotPltAddr+writepos[2]*ldbit shl 2;
          tempfinal.GotPltTable[writepos[2]]:=endoffset+ldfile.Adjust.Addend[i-1];
-         tempfinal.Rela.SymAddend[offset2-1]:=endoffset+ldfile.Adjust.Addend[i-1];
-         tempfinal.Rela.SymType[offset2-1]:=elf_reloc_arm_absolute_32bit;
+         tempfinal.Rela.SymAddend[tempfinal.Rela.SymCount-1]:=endoffset+ldfile.Adjust.Addend[i-1];
+         tempfinal.Rela.SymType[tempfinal.Rela.SymCount-1]:=elf_reloc_arm_absolute_32bit;
          k:=1;
          while(k<=tempfinal.DynSym.SymbolCount)do
           begin
@@ -11779,16 +11727,16 @@ begin
           end;
          if(k<=tempfinal.DynSym.SymbolCount) then
           begin
-           tempfinal.Rela.SymType[offset2-1]:=k shl 8+tempfinal.Rela.SymType[offset2-1];
+           tempfinal.Rela.SymType[tempfinal.Rela.SymCount-1]:=k shl 8+tempfinal.Rela.SymType[tempfinal.Rela.SymCount-1];
           end;
         end
        else
         begin
          SetLength(tempfinal.Rela.SymOffset,tempfinal.Rela.SymCount);
-         tempfinal.Rela.SymOffset[offset1-1]:=tempfinal.GotAddr+writepos[1]*ldbit shl 2;
+         tempfinal.Rela.SymOffset[tempfinal.Rela.SymCount-1]:=tempfinal.GotAddr+writepos[1]*ldbit shl 2;
          tempfinal.GotTable[writepos[1]]:=endoffset+ldfile.Adjust.Addend[i-1];
-         tempfinal.Rela.SymAddend[offset1-1]:=endoffset+ldfile.Adjust.Addend[i-1];
-         tempfinal.Rela.SymType[offset1-1]:=elf_reloc_arm_relative;
+         tempfinal.Rela.SymAddend[tempfinal.Rela.SymCount-1]:=endoffset+ldfile.Adjust.Addend[i-1];
+         tempfinal.Rela.SymType[tempfinal.Rela.SymCount-1]:=elf_reloc_arm_relative;
         end;
       end;
      negative:=false;
@@ -12034,10 +11982,10 @@ begin
        if(isexternal) or (ldfile.Adjust.DestIndex[i-1]=0) then
         begin
          SetLength(tempfinal.Rela.SymOffset,tempfinal.Rela.SymCount);
-         tempfinal.Rela.SymOffset[offset2-1]:=tempfinal.GotPltAddr+writepos[2]*ldbit shl 2;
+         tempfinal.Rela.SymOffset[tempfinal.Rela.SymCount-1]:=tempfinal.GotPltAddr+writepos[2]*ldbit shl 2;
          tempfinal.GotPltTable[writepos[2]]:=0;
-         tempfinal.Rela.SymAddend[offset2-1]:=0;
-         tempfinal.Rela.SymType[offset2-1]:=elf_reloc_aarch64_absolute_64bit;
+         tempfinal.Rela.SymAddend[tempfinal.Rela.SymCount-1]:=0;
+         tempfinal.Rela.SymType[tempfinal.Rela.SymCount-1]:=elf_reloc_aarch64_absolute_64bit;
          k:=1;
          while(k<=tempfinal.DynSym.SymbolCount)do
           begin
@@ -12046,16 +11994,16 @@ begin
           end;
          if(k<=tempfinal.DynSym.SymbolCount) then
           begin
-           tempfinal.Rela.SymType[offset2-1]:=k shl 32+tempfinal.Rela.SymType[offset2-1];
+           tempfinal.Rela.SymType[tempfinal.Rela.SymCount-1]:=k shl 32+tempfinal.Rela.SymType[tempfinal.Rela.SymCount-1];
           end;
         end
        else
         begin
          SetLength(tempfinal.Rela.SymOffset,tempfinal.Rela.SymCount);
-         tempfinal.Rela.SymOffset[offset1-1]:=tempfinal.GotAddr+writepos[1]*ldbit shl 2;
+         tempfinal.Rela.SymOffset[tempfinal.Rela.SymCount-1]:=tempfinal.GotAddr+writepos[1]*ldbit shl 2;
          tempfinal.GotTable[writepos[1]]:=endoffset+ldfile.Adjust.Addend[i-1];
-         tempfinal.Rela.SymAddend[offset1-1]:=endoffset+ldfile.Adjust.Addend[i-1];
-         tempfinal.Rela.SymType[offset1-1]:=elf_reloc_aarch64_relative;
+         tempfinal.Rela.SymAddend[tempfinal.Rela.SymCount-1]:=endoffset+ldfile.Adjust.Addend[i-1];
+         tempfinal.Rela.SymType[tempfinal.Rela.SymCount-1]:=elf_reloc_aarch64_relative;
         end;
       end;
      negative:=false;
@@ -12343,13 +12291,13 @@ begin
        if(isexternal) or (ldfile.Adjust.DestIndex[i-1]=0) then
         begin
          SetLength(tempfinal.Rela.SymOffset,tempfinal.Rela.SymCount);
-         tempfinal.Rela.SymOffset[offset2-1]:=tempfinal.GotPltAddr+writepos[2]*ldbit shl 2;
+         tempfinal.Rela.SymOffset[tempfinal.Rela.SymCount-1]:=tempfinal.GotPltAddr+writepos[2]*ldbit shl 2;
          tempfinal.GotPltTable[writepos[2]]:=0;
-         tempfinal.Rela.SymAddend[offset2-1]:=0;
+         tempfinal.Rela.SymAddend[tempfinal.Rela.SymCount-1]:=0;
          if(ldbit=1) then
-         tempfinal.Rela.SymType[offset2-1]:=elf_reloc_riscv_32bit
+         tempfinal.Rela.SymType[tempfinal.Rela.SymCount-1]:=elf_reloc_riscv_32bit
          else if(ldbit=2) then
-         tempfinal.Rela.SymType[offset2-1]:=elf_reloc_riscv_64bit;
+         tempfinal.Rela.SymType[tempfinal.Rela.SymCount-1]:=elf_reloc_riscv_64bit;
          k:=1;
          while(k<=tempfinal.DynSym.SymbolCount)do
           begin
@@ -12358,20 +12306,20 @@ begin
           end;
          if(k<=tempfinal.DynSym.SymbolCount) and (ldbit=1) then
           begin
-           tempfinal.Rela.SymType[offset2-1]:=k shl 8+tempfinal.Rela.SymType[offset2-1];
+           tempfinal.Rela.SymType[tempfinal.Rela.SymCount-1]:=k shl 8+tempfinal.Rela.SymType[tempfinal.Rela.SymCount-1];
           end
          else if(k<=tempfinal.DynSym.SymbolCount) and (ldbit=2) then
           begin
-           tempfinal.Rela.SymType[offset2-1]:=k shl 32+tempfinal.Rela.SymType[offset2-1];
+           tempfinal.Rela.SymType[tempfinal.Rela.SymCount-1]:=k shl 32+tempfinal.Rela.SymType[tempfinal.Rela.SymCount-1];
           end;
         end
        else
         begin
          SetLength(tempfinal.Rela.SymOffset,tempfinal.Rela.SymCount);
-         tempfinal.Rela.SymOffset[offset1-1]:=tempfinal.GotAddr+writepos[1]*ldbit shl 2;
+         tempfinal.Rela.SymOffset[tempfinal.Rela.SymCount-1]:=tempfinal.GotAddr+writepos[1]*ldbit shl 2;
          tempfinal.GotTable[writepos[1]]:=endoffset+ldfile.Adjust.Addend[i-1];
-         tempfinal.Rela.SymAddend[offset1-1]:=endoffset+ldfile.Adjust.Addend[i-1];
-         tempfinal.Rela.SymType[offset1-1]:=elf_reloc_riscv_relative;
+         tempfinal.Rela.SymAddend[tempfinal.Rela.SymCount-1]:=endoffset+ldfile.Adjust.Addend[i-1];
+         tempfinal.Rela.SymType[tempfinal.Rela.SymCount-1]:=elf_reloc_riscv_relative;
         end;
       end;
      if(tempformula.mask=0) then
@@ -12525,13 +12473,13 @@ begin
        if(isexternal) or (ldfile.Adjust.DestIndex[i-1]=0) then
         begin
          SetLength(tempfinal.Rela.SymOffset,tempfinal.Rela.SymCount);
-         tempfinal.Rela.SymOffset[offset2-1]:=tempfinal.GotPltAddr+writepos[2]*ldbit shl 2;
+         tempfinal.Rela.SymOffset[tempfinal.Rela.SymCount-1]:=tempfinal.GotPltAddr+writepos[2]*ldbit shl 2;
          tempfinal.GotPltTable[writepos[2]]:=0;
-         tempfinal.Rela.SymAddend[offset2-1]:=0;
+         tempfinal.Rela.SymAddend[tempfinal.Rela.SymCount-1]:=0;
          if(ldbit=1) then
-         tempfinal.Rela.SymType[offset2-1]:=elf_reloc_loongarch_32bit
+         tempfinal.Rela.SymType[tempfinal.Rela.SymCount-1]:=elf_reloc_loongarch_32bit
          else if(ldbit=2) then
-         tempfinal.Rela.SymType[offset2-1]:=elf_reloc_loongarch_64bit;
+         tempfinal.Rela.SymType[tempfinal.Rela.SymCount-1]:=elf_reloc_loongarch_64bit;
          k:=1;
          while(k<=tempfinal.DynSym.SymbolCount)do
           begin
@@ -12540,20 +12488,20 @@ begin
           end;
          if(k<=tempfinal.DynSym.SymbolCount) and (ldbit=1) then
           begin
-           tempfinal.Rela.SymType[offset2-1]:=k shl 8+tempfinal.Rela.SymType[offset2-1];
+           tempfinal.Rela.SymType[tempfinal.Rela.SymCount-1]:=k shl 8+tempfinal.Rela.SymType[tempfinal.Rela.SymCount-1];
           end
          else if(k<=tempfinal.DynSym.SymbolCount) and (ldbit=2) then
           begin
-           tempfinal.Rela.SymType[offset2-1]:=k shl 32+tempfinal.Rela.SymType[offset2-1];
+           tempfinal.Rela.SymType[tempfinal.Rela.SymCount-1]:=k shl 32+tempfinal.Rela.SymType[tempfinal.Rela.SymCount-1];
           end;
         end
        else
         begin
          SetLength(tempfinal.Rela.SymOffset,tempfinal.Rela.SymCount);
-         tempfinal.Rela.SymOffset[offset1-1]:=tempfinal.GotAddr+writepos[1]*ldbit shl 2;
+         tempfinal.Rela.SymOffset[tempfinal.Rela.SymCount-1]:=tempfinal.GotAddr+writepos[1]*ldbit shl 2;
          tempfinal.GotTable[writepos[1]]:=endoffset+ldfile.Adjust.Addend[i-1];
-         tempfinal.Rela.SymAddend[offset1-1]:=endoffset+ldfile.Adjust.Addend[i-1];
-         tempfinal.Rela.SymType[offset1-1]:=elf_reloc_loongarch_relative;
+         tempfinal.Rela.SymAddend[tempfinal.Rela.SymCount-1]:=endoffset+ldfile.Adjust.Addend[i-1];
+         tempfinal.Rela.SymType[tempfinal.Rela.SymCount-1]:=elf_reloc_loongarch_relative;
         end;
       end;
      if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_loongarch_add_8bit) or
@@ -12916,7 +12864,7 @@ begin
    else
     begin
      symboltable[i-1].Name.Reserved:=0;
-     symboltable[i-1].Name.Offset:=symbolstringtableptr;
+     symboltable[i-1].Name.Offset:=symbolstringtableptr-(i-1)*sizeof(coff_symbol_table_item);
      inc(symbolstringtableptr,length(ldfile.SymTable.SymbolName[i-1])+1);
     end;
    symboltable[i-1].Address:=startoffset;
