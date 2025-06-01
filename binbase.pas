@@ -383,21 +383,11 @@ type elf32_address=dword;
                      SecPtr:elf_section_header_ptr;
                      strtabptr:PChar;
                      symptr:elf_symbol_ptr;
+                     symcount:Natuint;
                      shstrtabptr:PChar;
+                     relacount:Natuint;
+                     relcount:Natuint;
                      end;
-     elf_file=packed record
-              bit:0..3;
-              HdrPtr:elf_header_ptr;
-              ProPtr:elf_program_header_ptr;
-              CntPtr:elf_content_ptr;
-              SecPtr:^elf_section_header_ptr;
-              dynPtr:elf_dynamic_ptr;
-              dynsymPtr:elf_symbol_ptr;
-              dynstrPtr:PChar;
-              strtabptr:PChar;
-              symptr:elf_symbol_ptr;
-              shstrtabptr:PChar;
-              end;
      {ELF Archive File Data Structure}
      elf_archive_file_header=packed record
                              ArchiveName:array[1..16] of char;
@@ -1856,4 +1846,5 @@ begin
 end;
 
 end.
+
 

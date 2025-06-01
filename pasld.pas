@@ -1,6 +1,6 @@
 program pasld;
 
-uses ldbase,binbase,strutils,convmem,sysutils;
+uses ldbase,binbase,strutils,convmem,sysutils,classes;
 
 type pasld_param=packed record
                  filename:dynstrarray;
@@ -15,17 +15,28 @@ type pasld_param=packed record
                  EntryName:string;
                  NeedMemory:Natuint;
                  NeedBlockSize:Natuint;
+                 NeedBlockPower:byte;
+                 NeedBlockLevel:byte;
                  DebugFrame:boolean;
                  OutputFileName:string;
+                 TotalFileSize:Natuint;
                  end;
     pasld_filelist=packed record
                    filepath:array of string;
                    filename:array of string;
+                   filesize:array of Natuint;
                    count:Natuint;
                    end;
 
 var error:boolean=false;
 
+function pasld_io_get_size(fn:string):dword;
+var fs:TFileStream;
+begin
+ fs:=TFileStream.Create(fn,fmOpenRead);
+ pasld_io_get_size:=fs.Size;
+ fs.Free;
+end;
 function pasld_search_for_filelist(basepath:string;mask:string;includesubdir:boolean):pasld_filelist;
 var SearchRec:TSearchRec;
     signal:LongInt;
@@ -48,8 +59,10 @@ begin
        inc(Result.count);
        SetLength(Result.filename,Result.count);
        SetLength(Result.filepath,Result.count);
+       SetLength(Result.filepath,Result.count);
        Result.filename[Result.count-1]:=templist.filename[i-1];
        Result.filepath[Result.count-1]:=templist.filepath[i-1];
+       Result.filesize[Result.count-1]:=templist.filesize[i-1];
        inc(i);
       end;
     end;
@@ -65,8 +78,10 @@ begin
    inc(Result.count);
    SetLength(Result.filename,Result.count);
    SetLength(Result.filepath,Result.count);
+   SetLength(Result.filesize,Result.count);
    Result.filename[Result.count-1]:=SearchRec.Name;
    Result.filepath[Result.count-1]:=basepath;
+   Result.filesize[Result.count-1]:=SearchRec.Size;
   end;
  FindClose(SearchRec);
 end;
@@ -124,7 +139,7 @@ begin
 end;
 procedure pasld_show_help;
 begin
- writeln('pasld(pascal linker) Version 0.0.2');
+ writeln('pasld(pascal linker) Version 0.0.3');
  writeln('Now show the help:');
  writeln('Template:pasld/pasld.exe [parameters]');
  writeln('Vaild parameters:');
@@ -169,21 +184,27 @@ begin
  writeln('             The option to generate UEFI Runtime Service Driver file.');
  writeln('--entry-point [entry point name]');
  writeln('             The entry point of the generated file.');
+ writeln('--linker-heap-smart');
+ writeln('             Linker now get smart size from file.');
  writeln('--linker-heap-size [specified size]');
  writeln('             Change the linker total block size to block size you have assigned.');
  writeln('--linker-block-size [block size]');
  writeln('             Change the linker minimum block size to block size you have assigned.');
+ writeln('--linker-block-power [block size]');
+ writeln('             Change the linker accelerate block power to block size you have assigned.');
  readln;
 end;
 function pasld_parse_parameter:pasld_param;
 var i,j:Natuint;
     templist:pasld_filelist;
+    smart:boolean=false;
 begin
  i:=1;
  Result.align:=$1000; Result.SmartLinking:=false;
  Result.ExecutableType:=0; Result.NoDefaultLibrary:=false;
- Result.ReserveSymbol:=true; Result.NeedMemory:=1024*1024*1024; Result.NeedBlockSize:=8;
- Result.DebugFrame:=true; Result.OutputFileName:='';
+ Result.ReserveSymbol:=true; Result.NeedMemory:=1024*1024*1024;
+ Result.NeedBlockSize:=3; Result.NeedBlockPower:=3; Result.NeedBlockLevel:=7;
+ Result.DebugFrame:=true; Result.OutputFileName:=''; Result.TotalFileSize:=0;
  Result.DynamicLinker:=''; Result.Signature:=''; Result.EntryName:='';
  SetLength(Result.filename,0); SetLength(Result.dynamiclibraryname,0);
  while(i<=ParamCount)do
@@ -202,18 +223,21 @@ begin
       begin
        SetLength(Result.filename,Length(Result.filename)+1);
        Result.filename[length(Result.filename)-1]:=templist.filepath[j-1]+'/'+templist.filename[j-1];
+       inc(Result.TotalFileSize,templist.filesize[j-1]);
       end;
      templist:=pasld_search_for_filelist(ParamStr(i+1),'*.a',false);
      for j:=1 to templist.count do
       begin
        SetLength(Result.filename,Length(Result.filename)+1);
        Result.filename[length(Result.filename)-1]:=templist.filepath[j-1]+'/'+templist.filename[j-1];
+       inc(Result.TotalFileSize,templist.filesize[j-1]);
       end;
      templist:=pasld_search_for_filelist(ParamStr(i+1),'*.ar',false);
      for j:=1 to templist.count do
       begin
        SetLength(Result.filename,Length(Result.filename)+1);
        Result.filename[length(Result.filename)-1]:=templist.filepath[j-1]+'/'+templist.filename[j-1];
+       inc(Result.TotalFileSize,templist.filesize[j-1]);
       end;
      inc(i);
     end
@@ -230,25 +254,30 @@ begin
       begin
        SetLength(Result.filename,Length(Result.filename)+1);
        Result.filename[length(Result.filename)-1]:=templist.filepath[j-1]+'/'+templist.filename[j-1];
+       inc(Result.TotalFileSize,templist.filesize[j-1]);
       end;
      templist:=pasld_search_for_filelist(ParamStr(i+1),'*.a',true);
      for j:=1 to templist.count do
       begin
        SetLength(Result.filename,Length(Result.filename)+1);
        Result.filename[length(Result.filename)-1]:=templist.filepath[j-1]+'/'+templist.filename[j-1];
+       inc(Result.TotalFileSize,templist.filesize[j-1]);
       end;
      templist:=pasld_search_for_filelist(ParamStr(i+1),'*.ar',true);
      for j:=1 to templist.count do
       begin
        SetLength(Result.filename,Length(Result.filename)+1);
        Result.filename[length(Result.filename)-1]:=templist.filepath[j-1]+'/'+templist.filename[j-1];
+       inc(Result.TotalFileSize,templist.filesize[j-1]);
       end;
      inc(i);
     end
    else if(LowerCase(ParamStr(i))='--input') then
     begin
      SetLength(Result.filename,Length(Result.filename)+1);
-     Result.filename[length(Result.filename)-1]:=ParamStr(i+1); inc(i);
+     Result.filename[length(Result.filename)-1]:=ParamStr(i+1);
+     Result.TotalFileSize:=pasld_io_get_size(ParamStr(i+1));
+     inc(i);
     end
    else if(LowerCase(ParamStr(i))='--output') then
     begin
@@ -333,6 +362,10 @@ begin
     begin
      Result.EntryName:=ParamStr(i+1); inc(i);
     end
+   else if(LowerCase(ParamStr(i))='--linker-heap-smart') then
+    begin
+     Smart:=true;
+    end
    else if(LowerCase(ParamStr(i))='--linker-heap-size') then
     begin
      Result.NeedBlockSize:=pasld_size_to_number(ParamStr(i+1));
@@ -340,8 +373,15 @@ begin
     end
    else if(LowerCase(ParamStr(i))='--linker-block-size') then
     begin
-     Result.NeedBlockSize:=pasld_block_size_to_power(StrToInt(ParamStr(i+1)));
-     inc(i);
+     Result.NeedBlockSize:=pasld_block_size_to_power(StrToInt(ParamStr(i+1))); inc(i);
+    end
+   else if(LowerCase(ParamStr(i))='--linker-block-power') then
+    begin
+     Result.NeedBlockPower:=StrToInt(ParamStr(i+1)); inc(i);
+    end
+   else if(LowerCase(ParamStr(i))='--linker-block-level') then
+    begin
+     Result.NeedBlockLevel:=StrToInt(ParamStr(i+1)); inc(i);
     end
    else
     begin
@@ -350,6 +390,40 @@ begin
      exit;
     end;
    inc(i);
+  end;
+ if(Smart=false) and (Result.NeedBlockLevel>7) and (Result.NeedBlockLevel<1) then
+  begin
+   writeln('ERROR:Needed Block Level '+ParamStr(i)+' illegal,must be 1 to 7.');
+   error:=true;
+   exit;
+  end;
+ if(Smart) then
+  begin
+   Result.NeedMemory:=(Result.TotalFileSize*4+$1000-1) div $1000*$1000;
+   if(Result.NeedMemory>=$10000000) then
+    begin
+     Result.NeedBlockSize:=4; Result.NeedBlockPower:=4; Result.NeedBlockLevel:=7;
+    end
+   else if(Result.NeedMemory>=$3FFFFFF) then
+    begin
+     Result.NeedBlockSize:=4; Result.NeedBlockPower:=4; Result.NeedBlockLevel:=6;
+    end
+   else if(Result.NeedMemory>=$1000000) then
+    begin
+     Result.NeedBlockSize:=4; Result.NeedBlockPower:=3; Result.NeedBlockLevel:=7;
+    end
+   else if(Result.NeedMemory>=$3FFFFF) then
+    begin
+     Result.NeedBlockSize:=3; Result.NeedBlockPower:=3; Result.NeedBlockLevel:=7;
+    end
+   else if(Result.NeedMemory>=$10000) then
+    begin
+     Result.NeedBlockSize:=3; Result.NeedBlockPower:=3; Result.NeedBlockLevel:=6;
+    end
+   else
+    begin
+     Result.NeedBlockSize:=3; Result.NeedBlockPower:=3; Result.NeedBlockLevel:=5;
+    end;
   end;
  if(Length(Result.filename)<=0) then
   begin
@@ -381,8 +455,8 @@ var ptr:Pointer;
     objlist:ld_object_file_list;
     handlefile:ld_object_file_stage_2;
 begin
- ptr:=allocmem(param.NeedMemory);
- memheap:=heap_initialize(Natuint(ptr),Natuint(ptr+param.NeedMemory),param.NeedBlockSize);
+ ptr:=getmem(param.NeedMemory);
+ tydq_heap_initialize(ptr,param.NeedMemory,param.NeedBlockSize,param.NeedBlockPower,param.NeedBlockLevel);
  if(Length(param.dynamiclibraryname)>0) then
   begin
    writeln('Handling the needed......');
@@ -400,7 +474,7 @@ begin
    handlefile:=ld_link_file(objlist,param.EntryName,param.SmartLinking);
    writeln('Generating ELF Files......');
    ld_handle_elf_file(param.OutputFileName,handlefile,param.align,
-   param.DebugFrame,(3-param.ExecutableType)*2,param.NoDefaultLibrary,not param.ReserveSymbol,
+   false,(3-param.ExecutableType) shl 1,param.NoDefaultLibrary,not param.ReserveSymbol,
    param.DynamicLinker,param.Signature);
    writeln('File '+param.OutputFileName+' generated!');
   end
@@ -410,7 +484,7 @@ begin
    handlefile:=ld_link_file(objlist,param.EntryName,param.SmartLinking);
    writeln('Generating EFI Files......');
    ld_handle_elf_file_to_efi_file(param.OutputFileName,handlefile,param.align,
-   param.DebugFrame,param.ExecutableType*2,not param.ReserveSymbol);
+   false,param.ExecutableType*2,not param.ReserveSymbol);
    writeln('File '+param.OutputFileName+' generated!');
   end;
  FreeMem(ptr);

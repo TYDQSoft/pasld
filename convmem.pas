@@ -2,8 +2,6 @@ unit convmem;
 
 interface
 
-{$MODE FPC}
-
 type natuint=SizeUint;
      natint=SizeInt;
      heap_item=bitpacked record
@@ -18,32 +16,62 @@ type natuint=SizeUint;
                  mem_block_power:byte;
                  item_max_pos:natuint;
                  end;
+     heap_total_record=packed record
+                       HeapEnable:array[1..7] of boolean;
+                       HeapAttribute:array[1..7] of heap_record;
+                       HeapCount:byte;
+                       end;
 
-var memheap:heap_record;
+const heap_have_prev:byte=$03;
+      heap_have_next:byte=$82;
+      heap_have_all:byte=$83;
 
-function heap_initialize(startpos,endpos:natuint;blockpower:byte):heap_record;
+var memheap:heap_total_record;
+
+procedure tydq_heap_initialize(startpos:Pointer;totalsize:Natuint;
+baseblockpower:byte;blockstep:byte;heapcount:byte);
 function tydq_getmem(size:natuint):Pointer;
-procedure tydq_getmem(var ptr:Pointer;size:natuint);
 function tydq_getmemsize(ptr:Pointer):natuint;
 function tydq_allocmem(size:natuint):Pointer;
 procedure tydq_freemem(var ptr:Pointer);
-procedure tydq_move(const src;var dest;Size:natuint);
-function tydq_compmem(p1,p2:Pointer;Size:Natuint):boolean;
-function tydq_reallocmem(var ptr:Pointer;size:natuint):Pointer;
-procedure tydq_move_inverse(const src;var dest;Size:natuint);
+procedure tydq_reallocmem(var ptr:Pointer;size:natuint);
+procedure tydq_move(const Source;var dest;Size:natuint);
 
 implementation
 
-function heap_initialize(startpos,endpos:natuint;blockpower:byte):heap_record;
+function heap_initialize(startpos,endpos:Pointer;blockpower:byte):heap_record;
 var res:heap_record;
 begin
  res.mem_start:=Pointer(startpos); res.mem_end:=Pointer(endpos);
  res.mem_block_power:=blockpower; res.item_max_pos:=0;
  heap_initialize:=res;
 end;
+procedure tydq_heap_initialize(startpos:Pointer;totalsize:Natuint;
+baseblockpower:byte;blockstep:byte;heapcount:byte);
+var i:byte;
+    heapunit,totalheapblock:Natuint;
+    tempptr:Pointer;
+begin
+ memheap.HeapCount:=heapcount; i:=1; heapunit:=0;
+ while(i<=heapcount)do
+  begin
+   heapunit:=heapunit shl 1+1;
+   inc(i);
+  end;
+ totalheapblock:=totalsize div heapunit; tempptr:=startpos;
+ for i:=1 to heapcount do
+  begin
+   memheap.HeapEnable[i]:=true;
+   memheap.HeapAttribute[i].mem_block_power:=baseblockpower+blockstep*(i-1);
+   memheap.HeapAttribute[i].mem_start:=tempptr;
+   memheap.HeapAttribute[i].mem_end:=tempptr+totalheapblock shl (i-1);
+   tempptr:=tempptr+totalheapblock shl (i-1);
+   memheap.HeapAttribute[i].item_max_pos:=0;
+  end;
+end;
 function heap_get_total_size(heap:heap_record):natuint;
 begin
- heap_get_total_size:=Natuint(heap.mem_end-heap.mem_start)+1;
+ heap_get_total_size:=Natuint(heap.mem_end-heap.mem_start);
 end;
 function heap_conv_addr_to_index(heap:heap_record;addr:Pointer;isitem:Boolean):natuint;
 begin
@@ -52,7 +80,7 @@ begin
 end;
 function heap_conv_index_to_addr(heap:heap_record;index:natuint;isitem:boolean):Pointer;
 begin
- if(isitem) then heap_conv_index_to_addr:=Pointer(heap.mem_end-index*sizeof(heap_item))
+ if(isitem) then heap_conv_index_to_addr:=Pointer(heap.mem_end-index)
  else heap_conv_index_to_addr:=Pointer(heap.mem_start+(index-1) shl heap.mem_block_power);
 end;
 function heap_conv_index_to_item(heap:heap_record;index:natuint):heap_item;
@@ -61,10 +89,9 @@ begin
 end;
 function heap_conv_mem_to_item(heap:heap_record;mem:Pointer):heap_item;
 var index:natuint;
-    res:heap_item;
 begin
  index:=Natuint(mem-heap.mem_start) shr heap.mem_block_power+1;
- heap_conv_mem_to_item:=Pheap_item(mem-index*sizeof(heap_item))^;
+ heap_conv_mem_to_item:=Pheap_item(mem-index)^;
 end;
 function heap_get_mem_count(heap:heap_record;ptr:Pointer):natuint;
 var i1,i2,index:natuint;
@@ -202,17 +229,19 @@ begin
    {Search for empty block which is in heap.item_max_pos
     If it is suitable,allocate it in heap.item_max_pos
     else,raise the item_max_pos for allocating memory}
-   if(heap.item_max_pos=0) and (blockcount shl heap.mem_block_power
-   +blockcount<=totalsize) then
+   if(heap.item_max_pos=0) and (blockcount shl heap.mem_block_power+blockcount<=totalsize) then
     begin
      i1:=1;
      while(i1<=blockcount)do
       begin
        tempptr:=heap_conv_index_to_addr(heap,i1,true);
        tempmemptr:=heap_conv_index_to_addr(heap,i1,false);
-       if(i1>1) then tempptr^.haveprev:=true else tempptr^.haveprev:=false;
-       tempptr^.allocated:=1;
-       if(i1<blockcount) then tempptr^.havenext:=true else tempptr^.havenext:=false;
+       if(i1>1) and (i1<blockcount) then
+       Pbyte(tempptr)^:=heap_have_all
+       else if(i1>1) then
+       Pbyte(tempptr)^:=heap_have_prev
+       else
+       Pbyte(tempptr)^:=heap_have_next;
        if(meminit) then
         begin
          for i2:=1 to 1 shl heap.mem_block_power shr 3 do (tempmemptr+i2-1)^:=0;
@@ -241,9 +270,12 @@ begin
         begin
          tempptr:=heap_conv_index_to_addr(heap,heap.item_max_pos+i1,true);
          tempmemptr:=heap_conv_index_to_addr(heap,heap.item_max_pos+i1,false);
-         if(i1>1) then tempptr^.haveprev:=true else tempptr^.haveprev:=false;
-         tempptr^.allocated:=1;
-         if(i1<blockcount) then tempptr^.havenext:=true else tempptr^.havenext:=false;
+         if(i1>1) and (i1<blockcount) then
+         Pbyte(tempptr)^:=heap_have_all
+         else if(i1>1) then
+         Pbyte(tempptr)^:=heap_have_prev
+         else
+         Pbyte(tempptr)^:=heap_have_next;
          if(meminit) then
           begin
            for i4:=1 to 1 shl heap.mem_block_power shr 3 do (tempmemptr+i4-1)^:=0;
@@ -264,9 +296,12 @@ begin
         begin
          tempptr:=heap_conv_index_to_addr(heap,i3,true);
          tempmemptr:=heap_conv_index_to_addr(heap,i3,false);
-         if(i3>i1-i2+1) then tempptr^.haveprev:=true else tempptr^.haveprev:=false;
-         tempptr^.allocated:=1;
-         if(i3<i1) then tempptr^.havenext:=true else tempptr^.havenext:=false;
+         if(i3>i1-i2+1) and (i3<i1) then
+         Pbyte(tempptr)^:=heap_have_all
+         else if(i3>i1-i2+1) then
+         Pbyte(tempptr)^:=heap_have_prev
+         else
+         Pbyte(tempptr)^:=heap_have_next;
          if(meminit) then
           begin
            for i4:=1 to 1 shl heap.mem_block_power shr 3 do (tempmemptr+i4-1)^:=0;
@@ -292,15 +327,14 @@ begin
  while(i<=blockcount)do
   begin
    tempptr:=heap_conv_index_to_addr(heap,index+i-1,true);
-   if(tempptr^.allocated<>0) then tempptr^.allocated:=0;
-   tempptr^.haveprev:=false; tempptr^.havenext:=false;
+   if(Pbyte(tempptr)^<>0) then Pbyte(tempptr)^:=0;
    inc(i);
   end;
  i:=heap.item_max_pos;
  while(i>0)do
   begin
    tempptr:=heap_conv_index_to_addr(heap,i-1,true);
-   if(tempptr^.allocated<>0) then break;
+   if(Pbyte(tempptr)^ and $7E<>0) then break;
    dec(i);
   end;
  heap.item_max_pos:=i;
@@ -321,126 +355,195 @@ begin
     begin
      for i:=1 to size2 shr 3 do (start2+i-1)^:=(start1+i-1)^;
     end
-   else if(size1<=size2) then
+   else
     begin
      for i:=1 to size1 shr 3 do (start2+i-1)^:=(start1+i-1)^;
     end;
   end;
 end;
 function tydq_getmem(size:natuint):Pointer;
+var i:byte;
+    ptr:Pointer;
 begin
- tydq_getmem:=heap_request_mem(memheap,size,false);
+ i:=memheap.HeapCount; ptr:=nil;
+ while(i>0)do
+  begin
+   if(size>=1 shl memheap.HeapAttribute[i].mem_block_power) or (i=1) then
+    begin
+     ptr:=heap_request_mem(memheap.HeapAttribute[i],size,false);
+     if(ptr<>nil) then break;
+    end;
+   dec(i);
+  end;
+ tydq_getmem:=ptr;
 end;
-procedure tydq_getmem(var ptr:Pointer;size:natuint);
+function tydq_getmemstart(ptr:Pointer):Pointer;
+var i:byte;
+    resptr:Pointer;
 begin
- ptr:=heap_request_mem(memheap,size,false);
+ i:=memheap.HeapCount; resptr:=nil;
+ while(i>0)do
+  begin
+   if(ptr>=memheap.HeapAttribute[i].mem_start) and (ptr<memheap.HeapAttribute[i].mem_end) then
+    begin
+     resptr:=heap_get_mem_start(memheap.HeapAttribute[i],ptr);
+     if(resptr<>nil) then break;
+    end;
+   dec(i);
+  end;
+ tydq_getmemstart:=resptr;
 end;
 function tydq_getmemsize(ptr:Pointer):natuint;
+var i:byte;
+    size:Natuint;
 begin
- tydq_getmemsize:=heap_get_mem_size(memheap,ptr);
+ i:=memheap.HeapCount; size:=0;
+ while(i>0)do
+  begin
+   if(ptr>=memheap.HeapAttribute[i].mem_start) and (ptr<memheap.HeapAttribute[i].mem_end) then
+    begin
+     size:=heap_get_mem_size(memheap.HeapAttribute[i],ptr);
+     if(size>0) then break;
+    end;
+   dec(i);
+  end;
+ tydq_getmemsize:=size;
 end;
 function tydq_allocmem(size:natuint):Pointer;
+var i:byte;
+    ptr:Pointer;
 begin
- tydq_allocmem:=heap_request_mem(memheap,size,true);
+ i:=memheap.HeapCount; ptr:=nil;
+ while(i>0)do
+  begin
+   if(size>=1 shl memheap.HeapAttribute[i].mem_block_power) or (i=1) then
+    begin
+     ptr:=heap_request_mem(memheap.HeapAttribute[i],size,true);
+     if(ptr<>nil) then break;
+    end;
+   dec(i);
+  end;
+ tydq_allocmem:=ptr;
 end;
 procedure tydq_freemem(var ptr:Pointer);
+var i:byte;
 begin
- heap_free_mem(memheap,ptr,true);
+ i:=memheap.HeapCount;
+ while(i>0)do
+  begin
+   if(ptr>=memheap.HeapAttribute[i].mem_start) and (ptr<memheap.HeapAttribute[i].mem_end) then
+    begin
+     heap_free_mem(memheap.HeapAttribute[i],ptr,true);
+     if(ptr=nil) then break;
+    end;
+   dec(i);
+  end;
 end;
-procedure tydq_move(const src;var dest;Size:natuint);
-var i:NatUint;
+procedure tydq_move(const Source;var dest;Size:natuint);
+var i,j,offset,total,rest:Natuint;
+    {$IFDEF CPU64}
     q1,q2:Pqword;
+    {$ENDIF}
     d1,d2:Pdword;
     w1,w2:Pword;
     b1,b2:Pbyte;
+    conflict:boolean;
 begin
- if(Size-size shr 3 shl 3=0) then
+ conflict:=false;
+ if((Pointer(@Dest)>=Pointer(@Source)) and (Pointer(@Dest)<=Pointer(@Source)+Size))
+ or((Pointer(@Source)>=Pointer(@Dest)) and (Pointer(@Source)<=Pointer(@Dest)+Size)) then
+ conflict:=true;
+ if(conflict=false) then
   begin
-   q1:=Pqword(@src); q2:=Pqword(@dest);
-   for i:=1 to Size shr 3 do (q2+i-1)^:=(q1+i-1)^;
-  end
- else if(Size-Size shr 2 shl 2=0) then
-  begin
-   d1:=Pdword(@src); d2:=Pdword(@dest);
-   for i:=1 to Size shr 2 do (d2+i-1)^:=(d1+i-1)^;
-  end
- else if(Size-Size shr 1 shl 1=0) then
-  begin
-   w1:=Pword(@src); w2:=Pword(@dest);
-   for i:=1 to Size shr 1 do (w2+i-1)^:=(w1+i-1)^;
+   {$IFDEF CPU64}
+   total:=size shr 3; rest:=size-total shl 3;
+   q1:=Pqword(@Source); q2:=Pqword(@Dest);
+   for i:=1 to total do (q2+i-1)^:=(q1+i-1)^;
+   offset:=total shl 3;
+   if(rest>=4) then
+    begin
+     d1:=PDword(Pointer(q1)+offset); d2:=PDword(Pointer(q2)+offset); d2^:=d1^;
+     inc(offset,4); dec(rest,4);
+    end;
+   if(rest>=2) then
+    begin
+     w1:=Pword(Pointer(q1)+offset); w2:=Pword(Pointer(q2)+offset); w2^:=w1^;
+     inc(offset,2); dec(rest,2);
+    end;
+   if(rest>=1) then
+    begin
+     b1:=Pbyte(Pointer(q1)+offset); b2:=Pbyte(Pointer(q2)+offset); b2^:=b1^;
+     inc(offset); dec(rest);
+    end;
+   {$ELSE}
+   total:=size shr 2; rest:=size-total shl 2;
+   d1:=Pdword(@Source); d2:=Pdword(@Dest);
+   for i:=1 to total do (d2+i-1)^:=(d1+i-1)^;
+   offset:=total shl 2;
+   if(rest>=2) then
+    begin
+     w1:=Pword(Pointer(q1)+offset); w2:=Pword(Pointer(q2)+offset); w2^:=w1^;
+     inc(offset,2); dec(rest,2);
+    end;
+   if(rest>=1) then
+    begin
+     b1:=Pbyte(Pointer(q1)+offset); b2:=Pbyte(Pointer(q2)+offset); b2^:=b1^;
+     inc(offset); dec(rest);
+    end;
+   {$ENDIF}
   end
  else
   begin
-   b1:=Pbyte(@src); b2:=Pbyte(@dest);
-   for i:=1 to Size do (b2+i-1)^:=(b1+i-1)^;
+   {$IFDEF CPU64}
+   total:=size shr 3; rest:=size-total shl 3;
+   q1:=Pqword(@Source); q2:=Pqword(@Dest);
+   offset:=size;
+   if(rest>=4) then
+    begin
+     d1:=PDword(Pointer(q1)+offset); d2:=PDword(Pointer(q2)+offset); d2^:=d1^;
+     dec(offset,4); dec(rest,4);
+    end;
+   if(rest>=2) then
+    begin
+     w1:=Pword(Pointer(q1)+offset); w2:=Pword(Pointer(q2)+offset); w2^:=w1^;
+     dec(offset,2); dec(rest,2);
+    end;
+   if(rest>=1) then
+    begin
+     b1:=Pbyte(Pointer(q1)+offset); b2:=Pbyte(Pointer(q2)+offset); b2^:=b1^;
+     dec(offset); dec(rest);
+    end;
+   for i:=total downto 1 do (q2+i-1)^:=(q1+i-1)^;
+   {$ELSE}
+   total:=size shr 2; rest:=size-total shl 2;
+   d1:=Pdword(@Source); d2:=Pdword(@Dest);
+   offset:=size;
+   if(rest>=2) then
+    begin
+     w1:=Pword(Pointer(q1)+offset); w2:=Pword(Pointer(q2)+offset); w2^:=w1^;
+     dec(offset,2); dec(rest,2);
+    end;
+   if(rest>=1) then
+    begin
+     b1:=Pbyte(Pointer(q1)+offset); b2:=Pbyte(Pointer(q2)+offset); b2^:=b1^;
+     dec(offset); dec(rest);
+    end;
+   for i:=total downto 1 do (d2+i-1)^:=(d1+i-1)^;
+   {$ENDIF}
   end;
 end;
-procedure tydq_move_inverse(const src;var dest;Size:natuint);
-var i:NatUint;
-    q1,q2:Pqword;
-    d1,d2:Pdword;
-    w1,w2:Pword;
-    b1,b2:Pbyte;
-begin
- if(Size-size shr 3 shl 3=0) then
-  begin
-   q1:=Pqword(@src); q2:=Pqword(@dest);
-   for i:=Size shr 3 downto 1 do (q2+i-1)^:=(q1+i-1)^;
-  end
- else if(Size-Size shr 2 shl 2=0) then
-  begin
-   d1:=Pdword(@src); d2:=Pdword(@dest);
-   for i:=Size shr 2 downto 1 do (d2+i-1)^:=(d1+i-1)^;
-  end
- else if(Size-Size shr 1 shl 1=0) then
-  begin
-   w1:=Pword(@src); w2:=Pword(@dest);
-   for i:=Size shr 1 downto 1 do (w2+i-1)^:=(w1+i-1)^;
-  end
- else
-  begin
-   b1:=Pbyte(@src); b2:=Pbyte(@dest);
-   for i:=Size downto 1 do (b2+i-1)^:=(b1+i-1)^;
-  end;
-end;
-function tydq_compmem(p1,p2:Pointer;Size:Natuint):boolean;
-var i:NatUint;
-    q1,q2:Pqword;
-    d1,d2:Pdword;
-    w1,w2:Pword;
-    b1,b2:Pbyte;
-begin
- if(Size-size shr 3 shl 3=0) then
-  begin
-   q1:=Pqword(p1); q2:=Pqword(p2);
-   for i:=1 to Size shr 3 do if((q2+i-1)^<>(q1+i-1)^) then exit(false);
-  end
- else if(Size-Size shr 2 shl 2=0) then
-  begin
-   d1:=Pdword(p1); d2:=Pdword(p2);
-   for i:=1 to Size shr 2 do if((d2+i-1)^<>(d1+i-1)^) then exit(false);
-  end
- else if(Size-Size shr 1 shl 1=0) then
-  begin
-   w1:=Pword(p1); w2:=Pword(p2);
-   for i:=1 to Size shr 1 do if((w2+i-1)^<>(w1+i-1)^) then exit(false);
-  end
- else
-  begin
-   b1:=Pbyte(p1); b2:=Pbyte(p2);
-   for i:=1 to Size do if((b2+i-1)^<>(b1+i-1)^) then exit(false);
-  end;
- tydq_compmem:=true;
-end;
-function tydq_reallocmem(var ptr:Pointer;size:natuint):Pointer;
+procedure tydq_reallocmem(var ptr:Pointer;size:natuint);
 var newptr,oldptr:Pointer;
+    size1,size2,sizemin:Natuint;
 begin
- newptr:=heap_request_mem(memheap,size,true);
- oldptr:=ptr;
- heap_move_mem(memheap,oldptr,newptr);
- heap_free_mem(memheap,oldptr,false);
+ newptr:=tydq_allocmem(size);
+ size1:=tydq_getmemsize(newptr); size2:=tydq_getmemsize(ptr);
+ if(size1=size2) then exit;
+ oldptr:=tydq_getmemstart(ptr);
+ if(size1>size2) then sizemin:=size2 else sizemin:=size1;
+ tydq_move(oldptr,newptr,sizemin);
+ tydq_freemem(oldptr);
  ptr:=newptr;
- tydq_reallocmem:=newptr;
 end;
 
 end.
