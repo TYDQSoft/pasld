@@ -22,6 +22,10 @@ type natuint=SizeUint;
                 item:ld_string;
                 bit:byte;
                 mask:Natuint;
+                ispaged:boolean;
+                isgotoffset:boolean;
+                isgotbase:boolean;
+                isrelative:boolean;
                 end;
      ld_map=packed record
             name:array of string;
@@ -594,7 +598,10 @@ function ld_generate_formula(formula:array of string;bit:byte;mask:Natuint=0):ld
 var i,len:Natuint;
     bool:boolean;
     OrgFormula:string;
+    tempstr:string;
 begin
+ Result.isgotbase:=false; Result.isgotoffset:=false;
+ Result.ispaged:=false; Result.isrelative:=false;
  if(length(formula)=0) then
   begin
    Result.item.count:=0; Result.bit:=0; Result.mask:=0; exit(Result);
@@ -603,26 +610,46 @@ begin
  for i:=2 to len do OrgFormula:=OrgFormula+formula[i-1];
  {Parse the formula}
  len:=length(orgformula); Result.item.count:=0; bool:=false;
- SetLength(Result.item.item,len);
+ SetLength(Result.item.item,len); tempstr:='';
  for i:=1 to len do
   begin
    if(OrgFormula[i]='(') or (OrgFormula[i]=')') or (OrgFormula[i]='+')
    or(OrgFormula[i]='-') or (OrgFormula[i]='|') or (OrgFormula[i]=',') then
     begin
+     if(bool) then
+      begin
+       if(Result.isgotbase=false) and (tempstr='G') and (OrgFormula[i]='(') then Result.isgotbase:=true
+       else if(Result.isgotoffset=false) and (tempstr='G') then Result.isgotoffset:=true
+       else if(Result.isgotbase=false) and ((tempstr='GOT')or(tempstr='GP'))and (OrgFormula[i]<>'(')
+       then Result.isgotbase:=true
+       else if(Result.isrelative=false) and
+       ((tempstr='P')or(tempstr='PLT')or(tempstr='PC')or(tempstr='L'))
+       then Result.isrelative:=true
+       else if(Result.ispaged=false) and (tempstr='Page')
+       then Result.ispaged:=true;
+       Result.item.item[Result.item.count-1]:=tempstr;
+      end;
      inc(Result.item.count);
      Result.item.item[Result.item.count-1]:=OrgFormula[i];
      bool:=false;
     end
    else if(bool=false) then
     begin
-     inc(Result.item.count);
-     Result.item.item[Result.item.count-1]:=OrgFormula[i];
-     bool:=true;
+     inc(Result.item.count); tempstr:=OrgFormula[i]; bool:=true;
     end
    else
     begin
-     Result.item.item[Result.item.count-1]:=Result.item.item[Result.item.count-1]+OrgFormula[i];
+     tempstr:=tempstr+OrgFormula[i];
     end;
+  end;
+ if(bool) then
+  begin
+   if(Result.isgotbase=false) and (tempstr='G') then Result.isgotoffset:=true
+   else if(Result.isgotoffset=false) and ((tempstr='GOT') or (tempstr='GP'))then Result.isgotbase:=true
+   else if(Result.isrelative=false) and (tempstr='P') or (tempstr='PLT')or(tempstr='PC')or(tempstr='L')
+   then Result.isrelative:=true
+   else if(Result.ispaged=false) and (tempstr='Page') then Result.ispaged:=true;
+   Result.item.item[Result.item.count-1]:=tempstr;
   end;
  {Set the mask and bit width}
  Result.bit:=bit; Result.mask:=mask;
@@ -5072,24 +5099,10 @@ begin
  {Confirm the Adjust Table for Relative}
  for i:=1 to ldfile.Adjust.Count do
   begin
-   j:=1;
-   isrelative:=false; isgotbase:=false; isgotoffset:=false; ispaged:=false; j:=1;
-   while(j<=ldfile.Adjust.Formula[i-1].item.count)do
-    begin
-     if(ldfile.Adjust.Formula[i-1].item.item[j-1]='G') then isgotoffset:=true;
-     if(j<ldfile.Adjust.Formula[i-1].item.count)
-     and((ldfile.Adjust.Formula[i-1].item.item[j-1]='GOT')
-     or(ldfile.Adjust.Formula[i-1].item.item[j-1]='GP'))
-     and (ldfile.Adjust.Formula[i-1].item.item[j]<>'(') then isgotbase:=true;
-     if(j<ldfile.Adjust.Formula[i-1].item.count) and (ldfile.Adjust.Formula[i-1].item.item[j-1]='G')
-     and (ldfile.Adjust.Formula[i-1].item.item[j]='(') then isgotbase:=true;
-     if(ldfile.Adjust.Formula[i-1].item.item[j-1]='P')
-     or(ldfile.Adjust.Formula[i-1].item.item[j-1]='PLT')
-     or(ldfile.Adjust.Formula[i-1].item.item[j-1]='PC')
-     or(ldfile.Adjust.Formula[i-1].item.item[j-1]='L') then isrelative:=true;
-     if(ldfile.Adjust.Formula[i-1].item.item[j-1]='Page') then ispaged:=true;
-     inc(j,2);
-    end;
+   isrelative:=ldfile.Adjust.Formula[i-1].isrelative;
+   isgotbase:=ldfile.Adjust.Formula[i-1].isgotbase;
+   isgotoffset:=ldfile.Adjust.Formula[i-1].isgotoffset;
+   ispaged:=ldfile.Adjust.Formula[i-1].ispaged;
    if(isrelative) and ((ldarch=elf_machine_386) or (ldarch=elf_machine_x86_64)) then
     begin
      ldfile.Adjust.Formula[i-1]:=ld_generate_formula(['S+A-P'],ldfile.Adjust.Formula[i-1].bit,
@@ -5102,7 +5115,7 @@ begin
      j:=1;
      while(j<=Length(tempfinal.GotPltSymbol)) do
       begin
-       if(tempfinal.GotPltSymbol[j-1]=ldfile.Adjust.AdjustName[i-1]) then break;
+       if(faststrcomp(tempfinal.GotPltSymbol[j-1],ldfile.Adjust.AdjustName[i-1])) then break;
        inc(j);
       end;
      if(j<=length(tempfinal.GotPltSymbol)) then continue;
@@ -5143,7 +5156,7 @@ begin
      j:=1;
      while(j<=Length(tempfinal.GotSymbol)) do
       begin
-       if(tempfinal.GotSymbol[j-1]=ldfile.Adjust.AdjustName[i-1]) then break;
+       if(faststrcomp(tempfinal.GotSymbol[j-1],ldfile.Adjust.AdjustName[i-1])) then break;
        inc(j);
       end;
      if(j<=length(tempfinal.GotSymbol)) then continue;
@@ -5156,7 +5169,7 @@ begin
      j:=1;
      while(j<=Length(tempfinal.GotSymbol)) do
       begin
-       if(tempfinal.GotSymbol[j-1]=ldfile.Adjust.AdjustName[i-1]) then break;
+       if(faststrcomp(tempfinal.GotSymbol[j-1],ldfile.Adjust.AdjustName[i-1])) then break;
        inc(j);
       end;
      if(j<=length(tempfinal.GotSymbol)) then continue;
@@ -5169,7 +5182,7 @@ begin
      j:=1;
      while(j<=Length(tempfinal.GotSymbol)) do
       begin
-       if(tempfinal.GotPltSymbol[j-1]=ldfile.Adjust.AdjustName[i-1]) then break;
+       if(faststrcomp(tempfinal.GotPltSymbol[j-1],ldfile.Adjust.AdjustName[i-1])) then break;
        inc(j);
       end;
      if(j<=length(tempfinal.GotPltSymbol)) then continue;
@@ -5182,7 +5195,7 @@ begin
      j:=1;
      while(j<=Length(tempfinal.GotSymbol)) do
       begin
-       if(tempfinal.GotSymbol[j-1]=ldfile.Adjust.AdjustName[i-1]) then break;
+       if(faststrcomp(tempfinal.GotSymbol[j-1],ldfile.Adjust.AdjustName[i-1])) then break;
        inc(j);
       end;
      if(j<=length(tempfinal.GotSymbol)) then continue;
@@ -7167,21 +7180,11 @@ begin
     end;
    if(j>tempfinal.SecCount) then continue;
    endoffset:=tempfinal.SecAddress[j-1]+ldfile.Adjust.DestOffset[i-1];
-   j:=1; isrelative:=false; isgotbase:=false; isgotoffset:=false;
    tempformula:=ldfile.Adjust.Formula[i-1];
-   while(j<=ldfile.Adjust.Formula[i-1].item.count)do
-    begin
-     if(ldfile.Adjust.Formula[i-1].item.item[j-1]='G') then isgotoffset:=true;
-     if(ldfile.Adjust.Formula[i-1].item.item[j-1]='GOT')
-     or(ldfile.Adjust.Formula[i-1].item.item[j-1]='GP') then isgotbase:=true;
-     if(j<ldfile.Adjust.Formula[i-1].item.count) and (ldfile.Adjust.Formula[i-1].item.item[j-1]='G')
-     and (ldfile.Adjust.Formula[i-1].item.item[j]='(') then isgotbase:=true;
-     if(ldfile.Adjust.Formula[i-1].item.item[j-1]='P')
-     or(ldfile.Adjust.Formula[i-1].item.item[j-1]='PLT')
-     or(ldfile.Adjust.Formula[i-1].item.item[j-1]='PC')
-     or(ldfile.Adjust.Formula[i-1].item.item[j-1]='L') then isrelative:=true;
-     inc(j,2);
-    end;
+   isrelative:=tempformula.isrelative;
+   isgotbase:=tempformula.isgotbase;
+   isgotoffset:=tempformula.isgotoffset;
+   ispaged:=tempformula.ispaged;
    isexternal:=false;
    if(isgotbase) or (isgotoffset) then
     begin
@@ -9376,7 +9379,6 @@ begin
     end;
    ld_io_write(fn,1,elfbinary^,writer32.Header.elf_section_header_offset+
    writer32.Header.elf_section_header_number*writer32.Header.elf_section_header_size);
-   tydq_freemem(elfbinary); i:=1;
   end
  else if(ldbit=2) then
   begin
@@ -9679,7 +9681,6 @@ begin
     end;
    ld_io_write(fn,1,elfbinary^,writer64.Header.elf_section_header_offset+
    writer64.Header.elf_section_header_number*writer64.Header.elf_section_header_size);
-   tydq_freemem(elfbinary); i:=1;
   end;
 end;
 procedure ld_initialize_pe_writer(var writer:ld_pe_writer);
@@ -9805,23 +9806,10 @@ begin
  for i:=1 to ldfile.Adjust.Count do
   begin
    j:=1;
-   isrelative:=false; isgotbase:=false; isgotoffset:=false; ispaged:=false; j:=1;
-   while(j<=ldfile.Adjust.Formula[i-1].item.count)do
-    begin
-     if(ldfile.Adjust.Formula[i-1].item.item[j-1]='G') then isgotoffset:=true;
-     if(j<ldfile.Adjust.Formula[i-1].item.count)
-     and((ldfile.Adjust.Formula[i-1].item.item[j-1]='GOT')
-     or(ldfile.Adjust.Formula[i-1].item.item[j-1]='GP'))
-     and (ldfile.Adjust.Formula[i-1].item.item[j]<>'(') then isgotbase:=true;
-     if(j<ldfile.Adjust.Formula[i-1].item.count) and (ldfile.Adjust.Formula[i-1].item.item[j-1]='G')
-     and (ldfile.Adjust.Formula[i-1].item.item[j]='(') then isgotbase:=true;
-     if(ldfile.Adjust.Formula[i-1].item.item[j-1]='P')
-     or(ldfile.Adjust.Formula[i-1].item.item[j-1]='PLT')
-     or(ldfile.Adjust.Formula[i-1].item.item[j-1]='PC')
-     or(ldfile.Adjust.Formula[i-1].item.item[j-1]='L') then isrelative:=true;
-     if(ldfile.Adjust.Formula[i-1].item.item[j-1]='Page') then ispaged:=true;
-     inc(j,2);
-    end;
+   isrelative:=ldfile.Adjust.Formula[i-1].isrelative;
+   isgotbase:=ldfile.Adjust.Formula[i-1].isgotbase;
+   isgotoffset:=ldfile.Adjust.Formula[i-1].isgotoffset;
+   ispaged:=ldfile.Adjust.Formula[i-1].ispaged;
    if(isrelative) and ((ldarch=elf_machine_386) or (ldarch=elf_machine_x86_64)) then
     begin
      ldfile.Adjust.Formula[i-1]:=ld_generate_formula(['S+A-P'],ldfile.Adjust.Formula[i-1].bit,
@@ -9866,7 +9854,7 @@ begin
      j:=1;
      while(j<=Length(tempfinal.GotSymbol)) do
       begin
-       if(tempfinal.GotSymbol[j-1]=ldfile.Adjust.AdjustName[i-1]) then break;
+       if(faststrcomp(tempfinal.GotSymbol[j-1],ldfile.Adjust.AdjustName[i-1])) then break;
        inc(j);
       end;
      if(j<=length(tempfinal.GotSymbol)) then continue;
@@ -9879,7 +9867,7 @@ begin
      j:=1;
      while(j<=Length(tempfinal.GotSymbol)) do
       begin
-       if(tempfinal.GotSymbol[j-1]=ldfile.Adjust.AdjustName[i-1]) then break;
+       if(faststrcomp(tempfinal.GotSymbol[j-1],ldfile.Adjust.AdjustName[i-1])) then break;
        inc(j);
       end;
      if(j<=length(tempfinal.GotSymbol)) then continue;
@@ -9899,7 +9887,7 @@ begin
      j:=1;
      while(j<=Length(tempfinal.GotSymbol)) do
       begin
-       if(tempfinal.GotSymbol[j-1]=ldfile.Adjust.AdjustName[i-1]) then break;
+       if(faststrcomp(tempfinal.GotSymbol[j-1],ldfile.Adjust.AdjustName[i-1])) then break;
        inc(j);
       end;
      if(j<=length(tempfinal.GotSymbol)) then continue;
@@ -11621,19 +11609,10 @@ begin
    endoffset:=tempfinal.SecAddress[j-1]+ldfile.Adjust.DestOffset[i-1];
    j:=1; isrelative:=false; isgotbase:=false; isgotoffset:=false;
    tempformula:=ldfile.Adjust.Formula[i-1];
-   while(j<=ldfile.Adjust.Formula[i-1].item.count)do
-    begin
-     if(ldfile.Adjust.Formula[i-1].item.item[j-1]='G') then isgotoffset:=true;
-     if(ldfile.Adjust.Formula[i-1].item.item[j-1]='GOT')
-     or(ldfile.Adjust.Formula[i-1].item.item[j-1]='GP') then isgotbase:=true;
-     if(j<ldfile.Adjust.Formula[i-1].item.count) and (ldfile.Adjust.Formula[i-1].item.item[j-1]='G')
-     and (ldfile.Adjust.Formula[i-1].item.item[j]='(') then isgotbase:=true;
-     if(ldfile.Adjust.Formula[i-1].item.item[j-1]='P')
-     or(ldfile.Adjust.Formula[i-1].item.item[j-1]='PLT')
-     or(ldfile.Adjust.Formula[i-1].item.item[j-1]='PC')
-     or(ldfile.Adjust.Formula[i-1].item.item[j-1]='L') then isrelative:=true;
-     inc(j,2);
-    end;
+   isrelative:=tempformula.isrelative;
+   isgotbase:=tempformula.isgotbase;
+   isgotoffset:=tempformula.isgotoffset;
+   ispaged:=tempformula.ispaged;
    isexternal:=false;
    if(isgotbase) or (isgotoffset) then
     begin
@@ -13428,12 +13407,6 @@ begin
   end;
  if(FileExists(fn)) then DeleteFile(fn);
  ld_io_write(fn,1,pebinary^,pesize);
- i:=1;
- while(i<=tempfinal.SecCount)do
-  begin
-   tydq_freemem(tempfinal.SecContent[i-1]);
-   inc(i);
-  end;
 end;
 
 end.
