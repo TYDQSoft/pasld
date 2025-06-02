@@ -184,8 +184,8 @@ begin
  writeln('             The option to generate UEFI Runtime Service Driver file.');
  writeln('--entry-point [entry point name]');
  writeln('             The entry point of the generated file.');
- writeln('--linker-heap-smart');
- writeln('             Linker now get smart size from file.');
+ writeln('--linker-heap-no-smart');
+ writeln('             Close the smart adjustment for linker.');
  writeln('--linker-heap-size [specified size]');
  writeln('             Change the linker total block size to block size you have assigned.');
  writeln('--linker-block-size [block size]');
@@ -197,7 +197,7 @@ end;
 function pasld_parse_parameter:pasld_param;
 var i,j:Natuint;
     templist:pasld_filelist;
-    smart:boolean=false;
+    smart:boolean=true;
 begin
  i:=1;
  Result.align:=$1000; Result.SmartLinking:=false;
@@ -362,9 +362,9 @@ begin
     begin
      Result.EntryName:=ParamStr(i+1); inc(i);
     end
-   else if(LowerCase(ParamStr(i))='--linker-heap-smart') then
+   else if(LowerCase(ParamStr(i))='--linker-heap-no-smart') then
     begin
-     Smart:=true;
+     Smart:=false;
     end
    else if(LowerCase(ParamStr(i))='--linker-heap-size') then
     begin
@@ -397,32 +397,50 @@ begin
    error:=true;
    exit;
   end;
+ if(Smart=false) and (Result.NeedBlockSize<3) then
+  begin
+   writeln('ERROR:Needed Block Size '+ParamStr(i)+' illegal,must greater than 8.');
+   error:=true;
+   exit;
+  end;
  if(Smart) then
   begin
-   Result.NeedMemory:=(Result.TotalFileSize*4+$1000-1) div $1000*$1000;
-   if(Result.NeedMemory>=$10000000) then
+   Result.NeedMemory:=(Result.TotalFileSize*6+$1000-1) div $1000*$1000;
+   if(Result.NeedMemory>=$C000000) then
+    begin
+     Result.NeedBlockSize:=5; Result.NeedBlockPower:=4; Result.NeedBlockLevel:=7;
+    end
+   else if(Result.NeedMemory>=$8000000) then
     begin
      Result.NeedBlockSize:=4; Result.NeedBlockPower:=4; Result.NeedBlockLevel:=7;
     end
-   else if(Result.NeedMemory>=$3FFFFFF) then
+   else if(Result.NeedMemory>=$4000000) then
     begin
-     Result.NeedBlockSize:=4; Result.NeedBlockPower:=4; Result.NeedBlockLevel:=6;
+     Result.NeedBlockSize:=3; Result.NeedBlockPower:=4; Result.NeedBlockLevel:=7;
     end
    else if(Result.NeedMemory>=$1000000) then
     begin
+     Result.NeedBlockSize:=5; Result.NeedBlockPower:=3; Result.NeedBlockLevel:=7;
+    end
+   else if(Result.NeedMemory>=$C00000) then
+    begin
      Result.NeedBlockSize:=4; Result.NeedBlockPower:=3; Result.NeedBlockLevel:=7;
     end
-   else if(Result.NeedMemory>=$3FFFFF) then
+   else if(Result.NeedMemory>=$800000) then
     begin
      Result.NeedBlockSize:=3; Result.NeedBlockPower:=3; Result.NeedBlockLevel:=7;
     end
-   else if(Result.NeedMemory>=$10000) then
+   else if(Result.NeedMemory>=$400000) then
     begin
-     Result.NeedBlockSize:=3; Result.NeedBlockPower:=3; Result.NeedBlockLevel:=6;
+     Result.NeedBlockSize:=5; Result.NeedBlockPower:=2; Result.NeedBlockLevel:=7;
+    end
+   else if(Result.NeedMemory>=$100000) then
+    begin
+     Result.NeedBlockSize:=4; Result.NeedBlockPower:=2; Result.NeedBlockLevel:=7;
     end
    else
     begin
-     Result.NeedBlockSize:=3; Result.NeedBlockPower:=3; Result.NeedBlockLevel:=5;
+     Result.NeedBlockSize:=3; Result.NeedBlockPower:=2; Result.NeedBlockLevel:=7;
     end;
   end;
  if(Length(Result.filename)<=0) then
