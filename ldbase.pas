@@ -105,7 +105,8 @@ type natuint=SizeUint;
                                  ChainCount:Natuint;
                                  ChainItem:array of Natuint;
                                  ChainUsed:array of boolean;
-                                 AdjustUsed:array of boolean;
+                                 AdjustIndex:array of Natuint;
+                                 AdjustStatus:array of byte;
                                  end;
      ld_object_file_item=packed record
                          SecUsed:array of boolean;
@@ -330,6 +331,9 @@ const ld_format_none=0;
       ld_loongarch_pcalau12i_opcode=13;
       ld_loongarch_pcaddu12i_opcode=14;
       ld_loongarch_pcaddu18i_opcode=15;
+      ld_adjust_got=1;
+      ld_adjust_got_plt=2;
+      ld_adjust_other=3;
 
 procedure ld_handle_dynamic_library(fn:dynstrarray);
 function ld_generate_file_list(fn:dynstrarray):ld_object_file_list;
@@ -416,7 +420,8 @@ begin
   begin
    index:=table.ChainItem[index];
    if(symtab[index]=value) then exit(index+1)
-   else if(table.ChainUsed[index]=false) then exit(0);
+   else if(table.ChainUsed[index]=false) then exit(0)
+   else if(index=table.ChainItem[index]) then exit(0);
   end;
 end;
 function ld_search_for_index_array(var table:ld_object_hash_table;var symtab:dynnatuintarray;value:Natuint):dynnatuintarray;
@@ -444,35 +449,45 @@ begin
    inc(i); index:=table.ChainItem[index]; Result[i-1]:=index+1;
   end;
 end;
-function ld_adjust_search_for_index_array(var table:ld_object_hash_table_adjust;
-var symtab:dynnatuintarray;value:Natuint;bool:boolean):boolean;
+function ld_adjust_search_for_index(var table:ld_object_hash_table_adjust;
+var symtab:dynnatuintarray;value:Natuint;inputindex:Natuint=0;adjtype:byte=0):Natuint;
 var index:Natuint;
-    len,i,j:Natuint;
 begin
- {Get the length}
- index:=table.BucketItem[value mod table.BucketCount]; len:=1;
- if(table.BucketUsed[value mod table.BucketCount]=false) then exit(false);
+ index:=table.BucketItem[value mod table.BucketCount];
+ if(symtab[index]=value) then
+  begin
+   if(inputindex=0) or (table.AdjustIndex[index]<>adjtype) then
+    begin
+     exit(index+1);
+    end
+   else if(table.AdjustIndex[index]=0) and (table.AdjustIndex[index]=adjtype) then
+    begin
+     table.AdjustIndex[index]:=inputindex; table.AdjustIndex[index]:=adjtype;
+     exit(0);
+    end;
+   exit(index+1);
+  end
+ else if(table.BucketUsed[value mod table.BucketCount]=false) then exit(0);
  while(True)do
   begin
    index:=table.ChainItem[index];
-   inc(len);
-   if(table.ChainUsed[index]=false) then break
-   else if(index=table.ChainItem[index]) then break;
+   if(symtab[index]=value) then
+    begin
+     if(inputindex=0) or (table.AdjustIndex[index]<>adjtype) then
+      begin
+       exit(index+1);
+      end
+     else if(table.AdjustIndex[index]=0) and (table.AdjustIndex[index]=adjtype) then
+      begin
+       table.AdjustIndex[index]:=inputindex; table.AdjustIndex[index]:=adjtype;
+       exit(0);
+      end;
+     exit(index+1);
+    end
+   else if(table.ChainUsed[index]=false) then exit(0)
+   else if(index=table.ChainItem[index]) then exit(0);
   end;
- {Set the Item}
- i:=1; index:=table.BucketItem[value mod table.BucketCount];
- if(symtab[index]=value) then j:=index+1 else j:=0;
- while(i<len)do
-  begin
-   inc(i);
-   if(symtab[index]=value) then j:=index+1;
-   index:=table.ChainItem[index];
-  end;
- if(j<>0) and (table.AdjustUsed[j-1]<>bool) then
-  begin
-   table.AdjustUsed[j-1]:=bool; ld_adjust_search_for_index_array:=true;
-  end
- else ld_adjust_search_for_index_array:=false;
+ ld_adjust_search_for_index:=0;
 end;
 function faststrcomp(str1,str2:string):boolean;
 var len1,len2,count,i,mid,mid2:SizeUint;
@@ -5032,7 +5047,8 @@ begin
     end;
   end;
  {Then Prepare for Adjust Table}
- SetLength(templist2.AdjustHashTable.AdjustUsed,templist2.Adjust.Count);
+ SetLength(templist2.AdjustHashTable.AdjustIndex,templist2.Adjust.Count);
+ SetLength(templist2.AdjustHashTable.AdjustStatus,templist2.Adjust.Count);
  templist2.AdjustHashTable.BucketCount:=templist2.Adjust.Count div 7*8+1;
  SetLength(templist2.AdjustHashTable.BucketItem,templist2.AdjustHashTable.BucketCount);
  SetLength(templist2.AdjustHashTable.BucketUsed,templist2.AdjustHashTable.BucketCount);
@@ -5079,7 +5095,9 @@ var tempfinal:ld_object_file_final;
     index:Natuint;
     {Set for Unique Adjustment Table}
     AdjustHash:ld_object_hash_table_adjust;
-    bool:boolean;
+    AdjNum:Natuint;
+    AdjGotCount:Natuint=0;
+    AdjGotPltCount:Natuint=0;
     {Set for Relocation}
     isrelative:boolean;
     isgotbase:boolean;
@@ -5204,9 +5222,10 @@ begin
    and ((ldarch=elf_machine_386) or (ldarch=elf_machine_x86_64))
    and ((isgotbase) or (isgotoffset)) then
     begin
-     bool:=ld_adjust_search_for_index_array(ldfile.AdjustHashTable,
-     DynNatuintArray(ldfile.Adjust.AdjustHash),ldfile.Adjust.AdjustHash[i-1],true);
-     if(bool) then continue;
+     Adjnum:=ld_adjust_search_for_index(ldfile.AdjustHashTable,
+     DynNatuintArray(ldfile.Adjust.AdjustHash),ldfile.Adjust.AdjustHash[i-1],
+     tempfinal.GotPltCount+1,ld_adjust_got_plt);
+     if(Adjnum=0) then continue;
      inc(tempfinal.GotPltCount);
      tempfinal.GotPltSymbol[tempfinal.GotPltCount-1]:=ldfile.Adjust.AdjustHash[i-1];
      inc(tempfinal.Rela.SymCount);
@@ -5241,31 +5260,30 @@ begin
     (ldfile.Adjust.AdjustType[i-1]=elf_reloc_riscv_low_12bit) or
     (ldfile.Adjust.AdjustType[i-1]=elf_reloc_riscv_high_20bit)) then
     begin
-     bool:=ld_adjust_search_for_index_array(ldfile.AdjustHashTable,
-     DynNatuintArray(ldfile.Adjust.AdjustHash),ldfile.Adjust.AdjustHash[i-1],true);
-     if(bool) then continue;
+     Adjnum:=ld_adjust_search_for_index(ldfile.AdjustHashTable,
+     DynNatuintArray(ldfile.Adjust.AdjustHash),ldfile.Adjust.AdjustHash[i-1],
+     tempfinal.GotCount+1,ld_adjust_got);
+     if(Adjnum=0) then continue;
      inc(tempfinal.GotCount);
      tempfinal.GotSymbol[tempfinal.GotCount-1]:=ldfile.Adjust.AdjustHash[i-1];
      inc(tempfinal.Rela.SymCount);
     end
    else if((isgotbase) or (isgotoffset)) and (ldfile.Adjust.DestIndex[i-1]<>0) then
     begin
-     j:=1;
-     while(j<=tempfinal.GotCount) do
-      begin
-       if(tempfinal.GotSymbol[j-1]=ldfile.Adjust.AdjustHash[i-1]) then break;
-       inc(j);
-      end;
-     if(j<=tempfinal.GotCount) then continue;
+     Adjnum:=ld_adjust_search_for_index(ldfile.AdjustHashTable,
+     DynNatuintArray(ldfile.Adjust.AdjustHash),ldfile.Adjust.AdjustHash[i-1],
+     tempfinal.GotCount+1,ld_adjust_got);
+     if(Adjnum=0) then continue;
      inc(tempfinal.GotCount);
      tempfinal.GotSymbol[tempfinal.GotCount-1]:=ldfile.Adjust.AdjustHash[i-1];
      inc(tempfinal.Rela.SymCount);
     end
    else if((isgotbase) or (isgotoffset)) and (ldfile.Adjust.DestIndex[i-1]=0) then
     begin
-     bool:=ld_adjust_search_for_index_array(ldfile.AdjustHashTable,
-     DynNatuintArray(ldfile.Adjust.AdjustHash),ldfile.Adjust.AdjustHash[i-1],true);
-     if(bool) then continue;
+     Adjnum:=ld_adjust_search_for_index(ldfile.AdjustHashTable,
+     DynNatuintArray(ldfile.Adjust.AdjustHash),ldfile.Adjust.AdjustHash[i-1],
+     tempfinal.GotPltCount+1,ld_adjust_got_plt);
+     if(Adjnum=0) then continue;
      inc(tempfinal.GotPltCount);
      tempfinal.GotPltSymbol[tempfinal.GotPltCount-1]:=ldfile.Adjust.AdjustHash[i-1];
      inc(tempfinal.Rela.SymCount);
@@ -5276,27 +5294,21 @@ begin
     end;
   end;
  {Confirm the Symbol Table for Dynamic Symbol}
+ SetLength(tempfinal.DynSym.SymbolBinding,ldfile.SymTable.SymbolCount);
+ SetLength(tempfinal.DynSym.SymbolNameHash,ldfile.SymTable.SymbolCount);
+ SetLength(tempfinal.DynSym.SymbolName,ldfile.SymTable.SymbolCount);
+ SetLength(tempfinal.DynSym.SymbolType,ldfile.SymTable.SymbolCount);
+ SetLength(tempfinal.DynSym.SymbolVisible,ldfile.SymTable.SymbolCount);
  for i:=1 to ldfile.SymTable.SymbolCount do
   begin
    if(ldfile.SymTable.SymbolIndex[i-1]=0) and (ldfile.SymTable.SymbolType[i-1]>0) then
     begin
      inc(tempfinal.DynSym.SymbolCount);
-     SetLength(tempfinal.DynSym.SymbolBinding,tempfinal.DynSym.SymbolCount);
-     tempfinal.DynSym.SymbolBinding[tempfinal.DynSym.SymbolCount-1]:=ldfile.SymTable.SymbolBinding[j-1];
-     SetLength(tempfinal.DynSym.SymbolNameHash,tempfinal.DynSym.SymbolCount);
-     tempfinal.DynSym.SymbolBinding[tempfinal.DynSym.SymbolCount-1]:=ldfile.SymTable.SymbolNameHash[j-1];
-     SetLength(tempfinal.DynSym.SymbolIndex,tempfinal.DynSym.SymbolCount);
-     tempfinal.DynSym.SymbolIndex[tempfinal.DynSym.SymbolCount-1]:=0;
-     SetLength(tempfinal.DynSym.SymbolName,tempfinal.DynSym.SymbolCount);
-     tempfinal.DynSym.SymbolName[tempfinal.DynSym.SymbolCount-1]:=ldfile.SymTable.SymbolName[j-1];
-     SetLength(tempfinal.DynSym.SymbolSize,tempfinal.DynSym.SymbolCount);
-     tempfinal.DynSym.SymbolSize[tempfinal.DynSym.SymbolCount-1]:=0;
-     SetLength(tempfinal.DynSym.SymbolType,tempfinal.DynSym.SymbolCount);
-     tempfinal.DynSym.SymbolType[tempfinal.DynSym.SymbolCount-1]:=ldfile.SymTable.SymbolType[j-1];
-     SetLength(tempfinal.DynSym.SymbolValue,tempfinal.DynSym.SymbolCount);
-     tempfinal.DynSym.SymbolValue[tempfinal.DynSym.SymbolCount-1]:=0;
-     SetLength(tempfinal.DynSym.SymbolVisible,tempfinal.DynSym.SymbolCount);
-     tempfinal.DynSym.SymbolVisible[tempfinal.DynSym.SymbolCount-1]:=ldfile.SymTable.SymbolVisible[j-1];
+     tempfinal.DynSym.SymbolBinding[tempfinal.DynSym.SymbolCount-1]:=ldfile.SymTable.SymbolBinding[i-1];
+     tempfinal.DynSym.SymbolNameHash[tempfinal.DynSym.SymbolCount-1]:=ldfile.SymTable.SymbolNameHash[i-1];
+     tempfinal.DynSym.SymbolName[tempfinal.DynSym.SymbolCount-1]:=ldfile.SymTable.SymbolName[i-1];
+     tempfinal.DynSym.SymbolType[tempfinal.DynSym.SymbolCount-1]:=ldfile.SymTable.SymbolType[i-1];
+     tempfinal.DynSym.SymbolVisible[tempfinal.DynSym.SymbolCount-1]:=ldfile.SymTable.SymbolVisible[i-1];
     end;
   end;
  {Set the Got Table and Got Plt Table}
@@ -5556,51 +5568,51 @@ begin
      tempindex2:=j;
      if(ld_formula_check_got(ldfile.Adjust.Formula[i-1])) then
       begin
-       j:=1; writepos[1]:=0; writepos[2]:=0;
-       while(j<=tempfinal.GotCount)do
+       j:=ld_adjust_search_for_index(ldfile.AdjustHashTable,
+       DynNatuintArray(ldfile.Adjust.AdjustHash),ldfile.Adjust.AdjustHash[i-1],0,ld_adjust_got);
+       if(j<>0) then
         begin
-         if(tempfinal.GotSymbol[j-1]=ldfile.Adjust.AdjustHash[i-1]) then
-          begin
-           writepos[1]:=2+j; break;
-          end;
-         inc(j);
-        end;
-       if(j>tempfinal.GotCount) then offset1:=j else offset1:=0;
-       j:=1;
-       while(j<=tempfinal.GotPltCount)do
+         offset1:=ldfile.AdjustHashTable.AdjustIndex[j-1]; writepos[1]:=2+offset1;
+        end
+       else
         begin
-         if(tempfinal.GotPltSymbol[j-1]=ldfile.Adjust.AdjustHash[i-1]) then
-          begin
-           writepos[2]:=2+j; break;
-          end;
-         inc(j);
+         offset1:=0; writepos[1]:=0;
         end;
-       if(j>tempfinal.GotPltCount) then offset2:=tempfinal.GotCount+j else offset2:=0;
+       j:=ld_adjust_search_for_index(ldfile.AdjustHashTable,
+       DynNatuintArray(ldfile.Adjust.AdjustHash),ldfile.Adjust.AdjustHash[i-1],0,ld_adjust_got_plt);
+       if(j<>0) then
+        begin
+         offset2:=ldfile.AdjustHashTable.AdjustIndex[j-1]; writepos[2]:=2+offset2;
+        end
+       else
+        begin
+         offset2:=0; writepos[2]:=0;
+        end;
       end;
      endoffset:=tempfinal.SecAddress[j-1]+ldfile.Adjust.DestOffset[i-1];
      isexternal:=false;
      if(isgotbase) or (isgotoffset) then
       begin
-       j:=1; writepos[1]:=0; writepos[2]:=0;
-       while(j<=tempfinal.GotCount)do
+       j:=ld_adjust_search_for_index(ldfile.AdjustHashTable,
+       DynNatuintArray(ldfile.Adjust.AdjustHash),ldfile.Adjust.AdjustHash[i-1],0,ld_adjust_got);
+       if(j<>0) then
         begin
-         if(tempfinal.GotSymbol[j-1]=ldfile.Adjust.AdjustHash[i-1]) then
-          begin
-           writepos[1]:=2+j; break;
-          end;
-         inc(j);
-        end;
-       if(j<=tempfinal.GotCount) then offset1:=j else offset1:=0;
-       j:=1;
-       while(j<=tempfinal.GotPltCount)do
+         offset1:=ldfile.AdjustHashTable.AdjustIndex[j-1]; writepos[1]:=2+offset1;
+        end
+       else
         begin
-         if(tempfinal.GotPltSymbol[j-1]=ldfile.Adjust.AdjustHash[i-1]) then
-          begin
-           writepos[2]:=2+j; isexternal:=true; break;
-          end;
-         inc(j);
+         offset1:=0; writepos[1]:=0;
         end;
-       if(j<=tempfinal.GotPltCount) then offset2:=tempfinal.GotCount+j else offset2:=0;
+       j:=ld_adjust_search_for_index(ldfile.AdjustHashTable,
+       DynNatuintArray(ldfile.Adjust.AdjustHash),ldfile.Adjust.AdjustHash[i-1],0,ld_adjust_got_plt);
+       if(j<>0) then
+        begin
+         offset2:=ldfile.AdjustHashTable.AdjustIndex[j-1]; writepos[2]:=2+offset2;
+        end
+       else
+        begin
+         offset2:=0; writepos[2]:=0;
+        end;
       end;
      if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_aarch64_adrp_page_rel_bit32_12)
      or(ldfile.Adjust.AdjustType[i-1]=elf_reloc_aarch64_adrp_page_rel_bit32_12_no_check)
@@ -6603,26 +6615,26 @@ begin
      tempindex2:=j;
      if(ld_formula_check_got(ldfile.Adjust.Formula[i-1])) then
       begin
-       j:=1; writepos[1]:=0; writepos[2]:=0;
-       while(j<=tempfinal.GotCount)do
+       j:=ld_adjust_search_for_index(ldfile.AdjustHashTable,
+       DynNatuintArray(ldfile.Adjust.AdjustHash),ldfile.Adjust.AdjustHash[i-1],0,ld_adjust_got);
+       if(j<>0) then
         begin
-         if(tempfinal.GotSymbol[j-1]=ldfile.Adjust.AdjustHash[i-1]) then
-          begin
-           writepos[1]:=2+j; break;
-          end;
-         inc(j);
-        end;
-       if(j>tempfinal.GotCount) then offset1:=j else offset1:=0;
-       j:=1;
-       while(j<=tempfinal.GotPltCount)do
+         offset1:=ldfile.AdjustHashTable.AdjustIndex[j-1]; writepos[1]:=2+offset1;
+        end
+       else
         begin
-         if(tempfinal.GotPltSymbol[j-1]=ldfile.Adjust.AdjustHash[i-1]) then
-          begin
-           writepos[2]:=2+j; break;
-          end;
-         inc(j);
+         offset1:=0; writepos[1]:=0;
         end;
-       if(j>tempfinal.GotPltCount) then offset2:=tempfinal.GotCount+j else offset2:=0;
+       j:=ld_adjust_search_for_index(ldfile.AdjustHashTable,
+       DynNatuintArray(ldfile.Adjust.AdjustHash),ldfile.Adjust.AdjustHash[i-1],0,ld_adjust_got_plt);
+       if(j<>0) then
+        begin
+         offset2:=ldfile.AdjustHashTable.AdjustIndex[j-1]; writepos[2]:=2+offset2;
+        end
+       else
+        begin
+         offset2:=0; writepos[2]:=0;
+        end;
       end;
      endoffset:=tempfinal.SecAddress[j-1]+ldfile.Adjust.DestOffset[i-1];
      {Rehandle the Adjustment Table For RISC-V}
@@ -7256,26 +7268,26 @@ begin
    isexternal:=false;
    if(isgotbase) or (isgotoffset) then
     begin
-     j:=1; writepos[1]:=0; writepos[2]:=0;
-     while(j<=tempfinal.GotCount)do
+     j:=ld_adjust_search_for_index(ldfile.AdjustHashTable,
+     DynNatuintArray(ldfile.Adjust.AdjustHash),ldfile.Adjust.AdjustHash[i-1],0,ld_adjust_got);
+     if(j<>0) then
       begin
-       if(tempfinal.GotSymbol[j-1]=ldfile.Adjust.AdjustHash[i-1]) then
-        begin
-         writepos[1]:=2+j; break;
-        end;
-       inc(j);
-      end;
-     if(j<=tempfinal.GotCount) then offset1:=j else offset1:=0;
-     j:=1;
-     while(j<=tempfinal.GotPltCount)do
+       offset1:=ldfile.AdjustHashTable.AdjustIndex[j-1]; writepos[1]:=2+offset1;
+      end
+     else
       begin
-       if(tempfinal.GotPltSymbol[j-1]=ldfile.Adjust.AdjustHash[i-1]) then
-        begin
-         writepos[2]:=2+j; isexternal:=true; break;
-        end;
-       inc(j);
+       offset1:=0; writepos[1]:=0;
       end;
-     if(j<=tempfinal.GotPltCount) then offset2:=tempfinal.GotCount+j else offset2:=0;
+     j:=ld_adjust_search_for_index(ldfile.AdjustHashTable,
+     DynNatuintArray(ldfile.Adjust.AdjustHash),ldfile.Adjust.AdjustHash[i-1],0,ld_adjust_got_plt);
+     if(j<>0) then
+      begin
+       offset2:=ldfile.AdjustHashTable.AdjustIndex[j-1]; writepos[2]:=2+offset2;
+      end
+     else
+      begin
+       offset2:=0; writepos[2]:=0;
+      end;
     end;
    if(ldarch=elf_machine_386) or (ldarch=elf_machine_x86_64) then
     begin
@@ -8961,10 +8973,9 @@ begin
        if(tempfinal.SecName[j-1]='.got.plt') then break;
        inc(j);
       end;
-     Pelf32_symbol_table_entry(ptr2+offset2)^.symbol_section_index:=tempfinal.SecIndex[j-1];
-     Pelf32_symbol_table_entry(ptr2+offset2)^.symbol_size:=ldbit shl 2;
-     Pelf32_symbol_table_entry(ptr2+offset2)^.symbol_value:=
-     tempfinal.SecAddress[GotPltIndex-1]+writepos[2]*ldbit shl 2;
+     Pelf32_symbol_table_entry(ptr2+offset2)^.symbol_section_index:=0;
+     Pelf32_symbol_table_entry(ptr2+offset2)^.symbol_size:=0;
+     Pelf32_symbol_table_entry(ptr2+offset2)^.symbol_value:=0;
      inc(offset2,sizeof(elf32_symbol_table_entry));
     end
    else if(ldbit=2) then
@@ -8983,20 +8994,15 @@ begin
      Pelf64_symbol_table_entry(ptr2+offset2)^.symbol_info:=tempfinal.DynSym.SymbolType[i-1] and $F
      +tempfinal.DynSym.SymbolBinding[i-1] shl 4;
      Pelf64_symbol_table_entry(ptr2+offset2)^.symbol_other:=0;
-     Pelf64_symbol_table_entry(ptr2+offset2)^.symbol_name:=offset1;
-     Pelf64_symbol_table_entry(ptr2+offset2)^.symbol_info:=tempfinal.DynSym.SymbolType[i-1] and $F
-     +tempfinal.DynSym.SymbolBinding[i-1] shl 4;
-     Pelf64_symbol_table_entry(ptr2+offset2)^.symbol_other:=0;
      j:=1;
      while(j<=tempfinal.SecCount)do
       begin
        if(tempfinal.SecName[j-1]='.got.plt') then break;
        inc(j);
       end;
-     Pelf64_symbol_table_entry(ptr2+offset2)^.symbol_section_index:=tempfinal.SecIndex[j-1];
-     Pelf64_symbol_table_entry(ptr2+offset2)^.symbol_size:=ldbit shl 2;
-     Pelf64_symbol_table_entry(ptr2+offset2)^.symbol_value:=
-     tempfinal.SecAddress[GotPltIndex-1]+writepos[2]*ldbit shl 2;
+     Pelf64_symbol_table_entry(ptr2+offset2)^.symbol_section_index:=0;
+     Pelf64_symbol_table_entry(ptr2+offset2)^.symbol_size:=0;
+     Pelf64_symbol_table_entry(ptr2+offset2)^.symbol_value:=0;
      inc(offset2,sizeof(elf64_symbol_table_entry));
     end;
    j:=1; k:=length(tempfinal.DynSym.SymbolName[i-1]);
@@ -9774,14 +9780,15 @@ var tempfinal:ld_object_file_final;
     i,j,k,m,n:Natuint;
     tempformula:ld_formula;
     writeindex:word;
-    writepos:array[1..2] of Natuint;
+    writepos:array[1..1] of Natuint;
     order:array of string;
     startoffset,endoffset:Natuint;
     changeptr:Pointer;
     tempresult:NatInt;
     index:Natuint;
     haverodata:boolean;
-    bool:boolean;
+    {Set the Adjustment Hash}
+    Adjnum:Natuint;
     {Set for Relocation}
     isrelative:boolean;
     isgotbase:boolean;
@@ -9930,18 +9937,20 @@ begin
     (ldfile.Adjust.AdjustType[i-1]=elf_reloc_riscv_low_12bit) or
     (ldfile.Adjust.AdjustType[i-1]=elf_reloc_riscv_high_20bit)) then
     begin
-     bool:=ld_adjust_search_for_index_array(ldfile.AdjustHashTable,
-     DynNatuintArray(ldfile.Adjust.AdjustHash),ldfile.Adjust.AdjustHash[i-1],true);
-     if(bool) then continue;
+     Adjnum:=ld_adjust_search_for_index(ldfile.AdjustHashTable,
+     DynNatuintArray(ldfile.Adjust.AdjustHash),ldfile.Adjust.AdjustHash[i-1],
+     tempfinal.GotCount+1,ld_adjust_got);
+     if(Adjnum=0) then continue;
      inc(tempfinal.GotCount);
      tempfinal.GotSymbol[tempfinal.GotCount-1]:=ldfile.Adjust.AdjustHash[i-1];
      inc(tempfinal.Rela.SymCount);
     end
    else if((isgotbase) or (isgotoffset)) and (ldfile.Adjust.DestIndex[i-1]<>0) then
     begin
-     bool:=ld_adjust_search_for_index_array(ldfile.AdjustHashTable,
-     DynNatuintArray(ldfile.Adjust.AdjustHash),ldfile.Adjust.AdjustHash[i-1],true);
-     if(bool) then continue;
+     Adjnum:=ld_adjust_search_for_index(ldfile.AdjustHashTable,
+     DynNatuintArray(ldfile.Adjust.AdjustHash),ldfile.Adjust.AdjustHash[i-1],
+     tempfinal.GotCount+1,ld_adjust_got);
+     if(Adjnum=0) then continue;
      inc(tempfinal.GotCount);
      tempfinal.GotSymbol[tempfinal.GotCount-1]:=ldfile.Adjust.AdjustHash[i-1];
      inc(tempfinal.Rela.SymCount);
@@ -9955,11 +9964,6 @@ begin
     end
    else if(ldarch=elf_machine_386) or (ldarch=elf_machine_x86_64) then
     begin
-     bool:=ld_adjust_search_for_index_array(ldfile.AdjustHashTable,
-     DynNatuintArray(ldfile.Adjust.AdjustHash),ldfile.Adjust.AdjustHash[i-1],true);
-     if(bool) then continue;
-     inc(tempfinal.GotPltCount);
-     tempfinal.GotSymbol[tempfinal.GotCount-1]:=ldfile.Adjust.AdjustHash[i-1];
      inc(tempfinal.Rela.SymCount);
     end;
   end;
@@ -10016,7 +10020,6 @@ begin
  relocoffset:=ld_align(startoffset,align);
  {For AArch64 Architecture Only}
  movesecoffset:=0; movesecoffset2:=0;
- writepos[1]:=3; writepos[2]:=3;
  if(ldarch=elf_machine_aarch64) then
   begin
    for i:=1 to ldfile.Adjust.Count do
@@ -10048,30 +10051,30 @@ begin
      tempindex2:=j;
      if(ld_formula_check_got(ldfile.Adjust.Formula[i-1])) then
       begin
-       j:=1; writepos[1]:=0; writepos[2]:=0;
-       while(j<=tempfinal.GotCount)do
+       j:=ld_adjust_search_for_index(ldfile.AdjustHashTable,
+       DynNatuintArray(ldfile.Adjust.AdjustHash),ldfile.Adjust.AdjustHash[i-1],0,ld_adjust_got);
+       if(j<>0) then
         begin
-         if(tempfinal.GotSymbol[j-1]=ldfile.Adjust.AdjustHash[i-1]) then
-          begin
-           writepos[1]:=2+j; break;
-          end;
-         inc(j);
+         offset1:=ldfile.AdjustHashTable.AdjustIndex[j-1]; writepos[1]:=2+offset1;
+        end
+       else
+        begin
+         offset1:=0; writepos[1]:=0;
         end;
-       if(j>tempfinal.GotCount) then offset1:=j else offset1:=0;
       end;
      endoffset:=tempfinal.SecAddress[j-1]+ldfile.Adjust.DestOffset[i-1];
      if(isgotbase) or (isgotoffset) then
       begin
-       j:=1; writepos[1]:=0; writepos[2]:=0;
-       while(j<=tempfinal.GotCount)do
+       j:=ld_adjust_search_for_index(ldfile.AdjustHashTable,
+       DynNatuintArray(ldfile.Adjust.AdjustHash),ldfile.Adjust.AdjustHash[i-1],0,ld_adjust_got);
+       if(j<>0) then
         begin
-         if(tempfinal.GotSymbol[j-1]=ldfile.Adjust.AdjustHash[i-1]) then
-          begin
-           writepos[1]:=2+j; break;
-          end;
-         inc(j);
+         offset1:=ldfile.AdjustHashTable.AdjustIndex[j-1]; writepos[1]:=2+offset1;
+        end
+       else
+        begin
+         offset1:=0; writepos[1]:=0;
         end;
-       if(j<=tempfinal.GotCount) then offset1:=j else offset1:=0;
       end;
      if(ldfile.Adjust.AdjustType[i-1]=elf_reloc_aarch64_adrp_page_rel_bit32_12)
      or(ldfile.Adjust.AdjustType[i-1]=elf_reloc_aarch64_adrp_page_rel_bit32_12_no_check)
@@ -11020,7 +11023,7 @@ begin
     end;
   end;
  {For Riscv Only}
- writepos[1]:=3; writepos[2]:=3;
+ writepos[1]:=3;
  if(ldarch=elf_machine_riscv) then
   begin
    for k:=1 to ldfile.Adjust.Count do
@@ -11041,42 +11044,45 @@ begin
      if(index>0) then
       begin
        if(ldfile.SecName[index-1]='.debug_frame') and (debugframe=false) then continue;
-       j:=1;
-       while(j<=tempfinal.SecCount)do
+       j:=ld_adjust_search_for_index(ldfile.AdjustHashTable,
+       DynNatuintArray(ldfile.Adjust.AdjustHash),ldfile.Adjust.AdjustHash[i-1],0,ld_adjust_got);
+       if(j<>0) then
         begin
-         if(ldfile.SecName[index-1]=tempfinal.SecName[j-1]) then break;
-         inc(j);
+         offset1:=ldfile.AdjustHashTable.AdjustIndex[j-1]; writepos[1]:=2+offset1;
+        end
+       else
+        begin
+         offset1:=0; writepos[1]:=0;
         end;
-       if(j>tempfinal.SecCount) then continue;
       end;
      tempindex2:=j;
      if(ld_formula_check_got(ldfile.Adjust.Formula[i-1])) then
       begin
-       j:=1; writepos[1]:=0; writepos[2]:=0;
-       while(j<=tempfinal.GotCount)do
+       j:=ld_adjust_search_for_index(ldfile.AdjustHashTable,
+       DynNatuintArray(ldfile.Adjust.AdjustHash),ldfile.Adjust.AdjustHash[i-1],0,ld_adjust_got);
+       if(j<>0) then
         begin
-         if(tempfinal.GotSymbol[j-1]=ldfile.Adjust.AdjustHash[i-1]) then
-          begin
-           writepos[1]:=2+j; break;
-          end;
-         inc(j);
+         offset1:=ldfile.AdjustHashTable.AdjustIndex[j-1]; writepos[1]:=2+offset1;
+        end
+       else
+        begin
+         offset1:=0; writepos[1]:=0;
         end;
-       if(j>tempfinal.GotCount) then offset1:=j else offset1:=0;
       end;
      endoffset:=tempfinal.SecAddress[j-1]+ldfile.Adjust.DestOffset[i-1];
      {Rehandle the Adjustment Table For RISC-V}
      if(isgotbase) or (isgotoffset) then
       begin
-       j:=1; writepos[1]:=0; writepos[2]:=0;
-       while(j<=tempfinal.GotCount)do
+       j:=ld_adjust_search_for_index(ldfile.AdjustHashTable,
+       DynNatuintArray(ldfile.Adjust.AdjustHash),ldfile.Adjust.AdjustHash[i-1],0,ld_adjust_got);
+       if(j<>0) then
         begin
-         if(tempfinal.GotSymbol[j-1]=ldfile.Adjust.AdjustHash[i-1]) then
-          begin
-           writepos[1]:=2+j; break;
-          end;
-         inc(j);
+         offset1:=ldfile.AdjustHashTable.AdjustIndex[j-1]; writepos[1]:=2+offset1;
+        end
+       else
+        begin
+         offset1:=0; writepos[1]:=0;
         end;
-       if(j<=tempfinal.GotCount) then offset1:=j else offset1:=0;
       end;
      if(ldfile.Adjust.Formula[i-1].mask=elf_riscv_u_i_type)then
       begin
@@ -11646,7 +11652,7 @@ begin
  SetLength(tempfinal.Rela.SymAddend,tempfinal.Rela.SymCount);
  SetLength(tempfinal.Rela.SymType,tempfinal.Rela.SymCount);
  tempfinal.Rela.SymCount:=0;
- writepos[1]:=3; writepos[2]:=3; startoffset:=0; endoffset:=0;
+ writepos[1]:=3; startoffset:=0; endoffset:=0;
  movesecoffset:=0; index:=0; offset1:=0;
  for i:=1 to ldfile.Adjust.Count do
   begin
@@ -11681,16 +11687,16 @@ begin
    ispaged:=tempformula.ispaged;
    if(isgotbase) or (isgotoffset) then
     begin
-     j:=1; writepos[1]:=0; writepos[2]:=0;
-     while(j<=tempfinal.GotCount)do
+     j:=ld_adjust_search_for_index(ldfile.AdjustHashTable,
+     DynNatuintArray(ldfile.Adjust.AdjustHash),ldfile.Adjust.AdjustHash[i-1],0,ld_adjust_got);
+     if(j<>0) then
       begin
-       if(tempfinal.GotSymbol[j-1]=ldfile.Adjust.AdjustHash[i-1]) then
-        begin
-         writepos[1]:=2+j; break;
-        end;
-       inc(j);
+       offset1:=ldfile.AdjustHashTable.AdjustIndex[j-1]; writepos[1]:=2+offset1;
+      end
+     else
+      begin
+       offset1:=0; writepos[1]:=0;
       end;
-     if(j<=tempfinal.GotCount) then offset1:=j else offset1:=0;
     end;
    if(ldarch=elf_machine_386) or (ldarch=elf_machine_x86_64) then
     begin

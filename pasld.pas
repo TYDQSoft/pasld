@@ -406,41 +406,61 @@ begin
  if(Smart) then
   begin
    Result.NeedMemory:=(Result.TotalFileSize*6+$1000-1) div $1000*$1000;
-   if(Result.NeedMemory>=$C000000) then
+   if(Result.NeedMemory>=$C0000000) then
     begin
-     Result.NeedBlockSize:=5; Result.NeedBlockPower:=4; Result.NeedBlockLevel:=7;
+     Result.NeedBlockSize:=6; Result.NeedBlockPower:=4; Result.NeedBlockLevel:=7;
     end
-   else if(Result.NeedMemory>=$8000000) then
+   else if(Result.NeedMemory>=$A000000) then
     begin
      Result.NeedBlockSize:=4; Result.NeedBlockPower:=4; Result.NeedBlockLevel:=7;
     end
-   else if(Result.NeedMemory>=$4000000) then
+   else if(Result.NeedMemory>=$8000000) then
     begin
-     Result.NeedBlockSize:=3; Result.NeedBlockPower:=4; Result.NeedBlockLevel:=7;
+     Result.NeedBlockSize:=6; Result.NeedBlockPower:=3; Result.NeedBlockLevel:=7;
     end
-   else if(Result.NeedMemory>=$1000000) then
-    begin
-     Result.NeedBlockSize:=5; Result.NeedBlockPower:=3; Result.NeedBlockLevel:=7;
-    end
-   else if(Result.NeedMemory>=$C00000) then
+   else if(Result.NeedMemory>=$6000000) then
     begin
      Result.NeedBlockSize:=4; Result.NeedBlockPower:=3; Result.NeedBlockLevel:=7;
     end
-   else if(Result.NeedMemory>=$800000) then
+   else if(Result.NeedMemory>=$4000000) then
     begin
-     Result.NeedBlockSize:=3; Result.NeedBlockPower:=3; Result.NeedBlockLevel:=7;
+     Result.NeedBlockSize:=6; Result.NeedBlockPower:=2; Result.NeedBlockLevel:=7;
     end
-   else if(Result.NeedMemory>=$400000) then
-    begin
-     Result.NeedBlockSize:=5; Result.NeedBlockPower:=2; Result.NeedBlockLevel:=7;
-    end
-   else if(Result.NeedMemory>=$100000) then
+   else if(Result.NeedMemory>=$2000000) then
     begin
      Result.NeedBlockSize:=4; Result.NeedBlockPower:=2; Result.NeedBlockLevel:=7;
     end
+   else if(Result.NeedMemory>=$E00000) then
+    begin
+     Result.NeedBlockSize:=6; Result.NeedBlockPower:=2; Result.NeedBlockLevel:=6;
+    end
+   else if(Result.NeedMemory>=$C00000) then
+    begin
+     Result.NeedBlockSize:=4; Result.NeedBlockPower:=2; Result.NeedBlockLevel:=6;
+    end
+   else if(Result.NeedMemory>=$A00000) then
+    begin
+     Result.NeedBlockSize:=6; Result.NeedBlockPower:=2; Result.NeedBlockLevel:=5;
+    end
+   else if(Result.NeedMemory>=$800000) then
+    begin
+     Result.NeedBlockSize:=4; Result.NeedBlockPower:=2; Result.NeedBlockLevel:=5;
+    end
+   else if(Result.NeedMemory>=$600000) then
+    begin
+     Result.NeedBlockSize:=6; Result.NeedBlockPower:=2; Result.NeedBlockLevel:=4;
+    end
+   else if(Result.NeedMemory>=$400000) then
+    begin
+     Result.NeedBlockSize:=4; Result.NeedBlockPower:=2; Result.NeedBlockLevel:=4;
+    end
+   else if(Result.NeedMemory>=$200000) then
+    begin
+     Result.NeedBlockSize:=6; Result.NeedBlockPower:=2; Result.NeedBlockLevel:=3;
+    end
    else
     begin
-     Result.NeedBlockSize:=3; Result.NeedBlockPower:=2; Result.NeedBlockLevel:=7;
+     Result.NeedBlockSize:=4; Result.NeedBlockPower:=2; Result.NeedBlockLevel:=3;
     end;
   end;
  if(Length(Result.filename)<=0) then
