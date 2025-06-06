@@ -1790,6 +1790,7 @@ end;
 function elf_check_archive_signature(content:PChar):boolean;
 var i:dword;
 begin
+ if(content=nil) then exit(false);
  for i:=1 to 8 do if((content+i-1)^<>(elf_archive_file_magic+i-1)^) then exit(false);
  elf_check_archive_signature:=true;
 end;

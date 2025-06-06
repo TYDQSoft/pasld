@@ -20,6 +20,7 @@ type pasld_param=packed record
                  DebugFrame:boolean;
                  OutputFileName:string;
                  TotalFileSize:Natuint;
+                 verbose:boolean;
                  end;
     pasld_filelist=packed record
                    filepath:array of string;
@@ -192,6 +193,8 @@ begin
  writeln('             Change the linker minimum block size to block size you have assigned.');
  writeln('--linker-block-power [block size]');
  writeln('             Change the linker accelerate block power to block size you have assigned.');
+ writeln('--verbose');
+ writeln('             if it is set,it will generate verbose information.');
  readln;
 end;
 function pasld_parse_parameter:pasld_param;
@@ -205,7 +208,7 @@ begin
  Result.ReserveSymbol:=true; Result.NeedMemory:=1024*1024*1024;
  Result.NeedBlockSize:=3; Result.NeedBlockPower:=3; Result.NeedBlockLevel:=7;
  Result.DebugFrame:=true; Result.OutputFileName:=''; Result.TotalFileSize:=0;
- Result.DynamicLinker:=''; Result.Signature:=''; Result.EntryName:='';
+ Result.DynamicLinker:=''; Result.Signature:=''; Result.EntryName:=''; Result.verbose:=false;
  SetLength(Result.filename,0); SetLength(Result.dynamiclibraryname,0);
  while(i<=ParamCount)do
   begin
@@ -383,6 +386,10 @@ begin
     begin
      Result.NeedBlockLevel:=StrToInt(ParamStr(i+1)); inc(i);
     end
+   else if(LowerCase(ParamStr(i))='--verbose') then
+    begin
+     Result.verbose:=true; inc(i);
+    end
    else
     begin
      writeln('ERROR:Unknown instruction '+ParamStr(i));
@@ -393,70 +400,70 @@ begin
   end;
  if(Smart=false) and (Result.NeedBlockLevel>7) and (Result.NeedBlockLevel<1) then
   begin
-   writeln('ERROR:Needed Block Level '+ParamStr(i)+' illegal,must be 1 to 7.');
+   writeln('ERROR:Needed Block Level '+IntToStr(Result.NeedBlockLevel)+' illegal,must be 1 to 7.');
    error:=true;
    exit;
   end;
  if(Smart=false) and (Result.NeedBlockSize<3) then
   begin
-   writeln('ERROR:Needed Block Size '+ParamStr(i)+' illegal,must greater than 8.');
+   writeln('ERROR:Needed Block Size '+IntToStr(1 shl Result.NeedBlockSize)+' illegal,must be equal or greater than 8.');
    error:=true;
    exit;
   end;
  if(Smart) then
   begin
-   Result.NeedMemory:=(Result.TotalFileSize*6+$1000-1) div $1000*$1000;
-   if(Result.NeedMemory>=$C0000000) then
+   Result.NeedMemory:=(Result.TotalFileSize*8+$1000-1) div $1000*$1000;
+   if(Result.NeedMemory>=$40000000) then
     begin
-     Result.NeedBlockSize:=6; Result.NeedBlockPower:=4; Result.NeedBlockLevel:=7;
+     Result.NeedBlockSize:=5; Result.NeedBlockPower:=4; Result.NeedBlockLevel:=7;
     end
-   else if(Result.NeedMemory>=$A000000) then
+   else if(Result.NeedMemory>=$10000000) then
     begin
      Result.NeedBlockSize:=4; Result.NeedBlockPower:=4; Result.NeedBlockLevel:=7;
     end
-   else if(Result.NeedMemory>=$8000000) then
+   else if(Result.NeedMemory>=$C000000) then
     begin
-     Result.NeedBlockSize:=6; Result.NeedBlockPower:=3; Result.NeedBlockLevel:=7;
+     Result.NeedBlockSize:=5; Result.NeedBlockPower:=3; Result.NeedBlockLevel:=7;
     end
-   else if(Result.NeedMemory>=$6000000) then
+   else if(Result.NeedMemory>=$8000000) then
     begin
      Result.NeedBlockSize:=4; Result.NeedBlockPower:=3; Result.NeedBlockLevel:=7;
     end
    else if(Result.NeedMemory>=$4000000) then
     begin
-     Result.NeedBlockSize:=6; Result.NeedBlockPower:=2; Result.NeedBlockLevel:=7;
+     Result.NeedBlockSize:=5; Result.NeedBlockPower:=2; Result.NeedBlockLevel:=7;
     end
-   else if(Result.NeedMemory>=$2000000) then
+   else if(Result.NeedMemory>=$1000000) then
     begin
      Result.NeedBlockSize:=4; Result.NeedBlockPower:=2; Result.NeedBlockLevel:=7;
     end
-   else if(Result.NeedMemory>=$E00000) then
-    begin
-     Result.NeedBlockSize:=6; Result.NeedBlockPower:=2; Result.NeedBlockLevel:=6;
-    end
    else if(Result.NeedMemory>=$C00000) then
     begin
-     Result.NeedBlockSize:=4; Result.NeedBlockPower:=2; Result.NeedBlockLevel:=6;
-    end
-   else if(Result.NeedMemory>=$A00000) then
-    begin
-     Result.NeedBlockSize:=6; Result.NeedBlockPower:=2; Result.NeedBlockLevel:=5;
+     Result.NeedBlockSize:=5; Result.NeedBlockPower:=2; Result.NeedBlockLevel:=6;
     end
    else if(Result.NeedMemory>=$800000) then
     begin
-     Result.NeedBlockSize:=4; Result.NeedBlockPower:=2; Result.NeedBlockLevel:=5;
-    end
-   else if(Result.NeedMemory>=$600000) then
-    begin
-     Result.NeedBlockSize:=6; Result.NeedBlockPower:=2; Result.NeedBlockLevel:=4;
+     Result.NeedBlockSize:=4; Result.NeedBlockPower:=2; Result.NeedBlockLevel:=6;
     end
    else if(Result.NeedMemory>=$400000) then
     begin
+     Result.NeedBlockSize:=5; Result.NeedBlockPower:=2; Result.NeedBlockLevel:=5;
+    end
+   else if(Result.NeedMemory>=$100000) then
+    begin
+     Result.NeedBlockSize:=4; Result.NeedBlockPower:=2; Result.NeedBlockLevel:=5;
+    end
+   else if(Result.NeedMemory>=$C0000) then
+    begin
+     Result.NeedBlockSize:=5; Result.NeedBlockPower:=2; Result.NeedBlockLevel:=4;
+    end
+   else if(Result.NeedMemory>=$80000) then
+    begin
      Result.NeedBlockSize:=4; Result.NeedBlockPower:=2; Result.NeedBlockLevel:=4;
     end
-   else if(Result.NeedMemory>=$200000) then
+   else if(Result.NeedMemory>=$40000) then
     begin
-     Result.NeedBlockSize:=6; Result.NeedBlockPower:=2; Result.NeedBlockLevel:=3;
+     Result.NeedBlockSize:=5; Result.NeedBlockPower:=2; Result.NeedBlockLevel:=3;
     end
    else
     begin
@@ -497,33 +504,33 @@ begin
  tydq_heap_initialize(ptr,param.NeedMemory,param.NeedBlockSize,param.NeedBlockPower,param.NeedBlockLevel);
  if(Length(param.dynamiclibraryname)>0) then
   begin
-   writeln('Handling the needed......');
+   if(param.verbose) then writeln('Handling the needed......');
    ld_handle_dynamic_library(dynstrarray(param.dynamiclibraryname));
   end
  else
   begin
    ld_handle_dynamic_library([]);
   end;
- writeln('Reading Files......');
+ if(param.verbose) then writeln('Reading Files......');
  objlist:=ld_generate_file_list(dynstrarray(param.filename));
  if(param.ExecutableType<=2) then
   begin
-   writeln('Linking ELF Files......');
+   if(param.verbose) then writeln('Linking ELF Files......');
    handlefile:=ld_link_file(objlist,param.EntryName,param.SmartLinking);
-   writeln('Generating ELF Files......');
+   if(param.verbose) then writeln('Generating ELF Files......');
    ld_handle_elf_file(param.OutputFileName,handlefile,param.align,
    false,(3-param.ExecutableType) shl 1,param.NoDefaultLibrary,not param.ReserveSymbol,
    param.DynamicLinker,param.Signature);
-   writeln('File '+param.OutputFileName+' generated!');
+   if(param.verbose) then writeln('File '+param.OutputFileName+' generated!');
   end
  else
   begin
-   writeln('Linking ELF Files......');
+   if(param.verbose) then writeln('Linking ELF Files......');
    handlefile:=ld_link_file(objlist,param.EntryName,param.SmartLinking);
-   writeln('Generating EFI Files......');
+   if(param.verbose) then writeln('Generating EFI Files......');
    ld_handle_elf_file_to_efi_file(param.OutputFileName,handlefile,param.align,
    false,param.ExecutableType*2,not param.ReserveSymbol);
-   writeln('File '+param.OutputFileName+' generated!');
+   if(param.verbose) then writeln('File '+param.OutputFileName+' generated!');
   end;
  FreeMem(ptr);
 end;

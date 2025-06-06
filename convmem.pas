@@ -538,10 +538,13 @@ var newptr,oldptr:Pointer;
 begin
  newptr:=tydq_allocmem(size);
  size1:=tydq_getmemsize(newptr); size2:=tydq_getmemsize(ptr);
- if(size1=size2) then exit;
+ if(size1=size2) then
+  begin
+   tydq_freemem(newptr); exit;
+  end
+ else if(size1>size2) then sizemin:=size2 else sizemin:=size1;
  oldptr:=tydq_getmemstart(ptr);
- if(size1>size2) then sizemin:=size2 else sizemin:=size1;
- tydq_move(oldptr,newptr,sizemin);
+ tydq_move(oldptr^,newptr^,sizemin);
  tydq_freemem(oldptr);
  ptr:=newptr;
 end;
