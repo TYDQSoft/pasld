@@ -155,7 +155,6 @@ type natuint=SizeUint;
                                       SymbolSymIndex:PNatuint;
                                       SymbolType:Pboolean;
                                       SymbolSectionType:array of byte;
-                                      SymbolSection:array of string;
                                       SymbolSectionHash:array of Natuint;
                                       SymbolName:array of string;
                                       SymbolNameHash:array of Natuint;
@@ -177,7 +176,7 @@ type natuint=SizeUint;
                             EntryOffset:Dword;
                             SecName:array of string;
                             SecContent:array of ld_object_file_section;
-                            SecSize:Pdword;
+                            SecSize:PDword;
                             SecCount:Natuint;
                             SecRel:array of ld_object_file_rel_table;
                             SecRelCount:Natuint;
@@ -344,23 +343,20 @@ function ld_generate_file_list(fn:dynstrarray):ld_object_file_list;
 function ld_link_file(var objlist:ld_object_file_list;EntryName:string;SmartLinking:boolean):ld_object_file_stage_2;
 procedure ld_handle_elf_file(fn:string;var ldfile:ld_object_file_stage_2;align:dword;debugframe:boolean;
 format:byte;nodefaultlibrary:boolean;stripsymbol:boolean;dynamiclinker:string;
-signature:string);
+signature:string;startaddress:Natuint);
 procedure ld_handle_elf_file_to_efi_file(fn:string;var ldfile:ld_object_file_stage_2;align:dword;
-debugframe:boolean;format:byte;stripsymbol:boolean);
+debugframe:boolean;format:byte;stripsymbol:boolean;startaddress:Natuint);
 procedure ld_free_object_file_list(var filelist:ld_object_file_list);
 
 implementation
 
 function int_to_hash(num:Natuint;fixed:boolean=false):string;
-const numstr:array[1..4] of string=('08\k$O_EU,DSLez>','+!C#n(jxV;iB/m)@',
-'u%F&T?`"I|f=]v9Y','5^1rG*wW2q3~[6o-');
+const numstr:string='q{(0Y4:!t#xao>vTs]Nc+CXe;%V$m5y3lUh,_}f7"F&zQ-pP*LrJ)u9^|Z/\=`1[';
 var tempnum:Natuint;
-    i:byte;
 begin
- i:=0;
  if(num=0) then
   begin
-   if(fixed=false) then exit('0') else exit('-');
+   if(fixed=false) then exit('q') else exit('[');
   end
  else
   begin
@@ -369,9 +365,8 @@ begin
      tempnum:=num; Result:='';
      while(tempnum>0)do
       begin
-       inc(i);
-       Result:=Result+numstr[i mod 2+1][tempnum mod 16+1];
-       tempnum:=tempnum div 16;
+       Result:=Result+numstr[1+tempnum mod 32];
+       tempnum:=tempnum div 32;
       end;
     end
    else
@@ -379,17 +374,18 @@ begin
      tempnum:=num; Result:='';
      while(tempnum>0)do
       begin
-       inc(i);
-       Result:=Result+numstr[4-i mod 2][tempnum mod 16+1];
-       tempnum:=tempnum div 16;
+       Result:=Result+numstr[64-tempnum mod 32];
+       tempnum:=tempnum div 32;
       end;
     end;
   end;
 end;
 function generate_hash_from_string(str:string;section:boolean=false):Natuint;
 begin
- if(section=false) then generate_hash_from_string:=pashash_generate_value(str,4)
- else generate_hash_from_string:=pashash_generate_value(str,3);
+ if(section=false) then
+ generate_hash_from_string:=pashash_generate_value(str,2)
+ else
+ generate_hash_from_string:=pashash_generate_value(str,6);
 end;
 function ld_search_for_index(var table:ld_object_hash_table;var symtab:dynnatuintarray;value:Natuint):Natuint;
 var index:Natuint;
@@ -1460,7 +1456,7 @@ procedure ld_handle_symbol_table(var middlelist:ld_object_file_temporary;EntryHa
 SmartLinking:boolean;var symtable:ld_object_hash_table;var symsectable:ld_object_hash_table;
 const relcount:Natuint;var reltable:ld_object_hash_table;
 const relacount:Natuint;var relatable:ld_object_hash_table);
-var i,j,k,m:Natuint;
+var i,j,k:Natuint;
     secarray:dynnatuintarray;
 begin
  if(EntryHash=0) then exit;
@@ -2054,6 +2050,8 @@ begin
      templist1.ObjFile[i-1].SecRel[j-1].SymCount);
      SetLength(middlelist.SecRel[middlelist.SecRelCount-1].SymHash,
      templist1.ObjFile[i-1].SecRel[j-1].SymCount);
+     SetLength(middlelist.SecRel[middlelist.SecRelCount-1].SymName,
+     templist1.ObjFile[i-1].SecRel[j-1].SymCount);
      count:=0;
      for k:=1 to templist1.ObjFile[i-1].SecRel[j-1].SymCount do
       begin
@@ -2061,12 +2059,10 @@ begin
        count:=middlelist.SecRel[middlelist.SecRelaCount-1].SymCount;
        middlelist.SecRel[middlelist.SecRelCount-1].SymOffset[count-1]:=
        templist1.ObjFile[i-1].SecRel[j-1].SymOffset[k-1];
-       if(templist1.ObjFile[i-1].SecRel[j-1].Symbol[k-1]=0) then
-       middlelist.SecRel[middlelist.SecRelCount-1].SymHash[count-1]:=0
-       else
+       middlelist.SecRel[middlelist.SecRelCount-1].SymName[count-1]:=
+       TempList1.ObjFile[i-1].SymTable.SymbolName[templist1.ObjFile[i-1].SecRel[j-1].Symbol[k-1]];
        middlelist.SecRel[middlelist.SecRelCount-1].SymHash[count-1]:=
-       generate_hash_from_string(
-       TempList1.ObjFile[i-1].SymTable.SymbolName[templist1.ObjFile[i-1].SecRel[j-1].Symbol[k-1]]);
+       generate_hash_from_string(TempList1.ObjFile[i-1].SymTable.SymbolName[templist1.ObjFile[i-1].SecRel[j-1].Symbol[k-1]]);
        middlelist.SecRel[middlelist.SecRelCount-1].SymType[count-1]:=
        templist1.ObjFile[i-1].SecRel[j-1].SymType[k-1];
        inc(relcount);
@@ -2096,6 +2092,8 @@ begin
      templist1.ObjFile[i-1].SecRela[j-1].SymCount);
      SetLength(middlelist.SecRela[middlelist.SecRelaCount-1].SymAddend,
      templist1.ObjFile[i-1].SecRela[j-1].SymCount);
+     SetLength(middlelist.SecRela[middlelist.SecRelaCount-1].SymName,
+     templist1.ObjFile[i-1].SecRela[j-1].SymCount);
      count:=0;
      for k:=1 to templist1.ObjFile[i-1].SecRela[j-1].SymCount do
       begin
@@ -2103,9 +2101,8 @@ begin
        count:=middlelist.SecRela[middlelist.SecRelaCount-1].SymCount;
        middlelist.SecRela[middlelist.SecRelaCount-1].SymOffset[count-1]:=
        templist1.ObjFile[i-1].SecRela[j-1].SymOffset[k-1];
-       if(templist1.ObjFile[i-1].SecRela[j-1].Symbol[k-1]=0) then
-       middlelist.SecRela[middlelist.SecRelaCount-1].SymHash[count-1]:=0
-       else
+       middlelist.SecRela[middlelist.SecRelaCount-1].SymName[count-1]:=
+       TempList1.ObjFile[i-1].SymTable.SymbolName[templist1.ObjFile[i-1].SecRela[j-1].Symbol[k-1]];
        middlelist.SecRela[middlelist.SecRelaCount-1].SymHash[count-1]:=
        generate_hash_from_string(
        TempList1.ObjFile[i-1].SymTable.SymbolName[templist1.ObjFile[i-1].SecRela[j-1].Symbol[k-1]]);
@@ -5241,7 +5238,7 @@ begin
 end;
 procedure ld_handle_elf_file(fn:string;var ldfile:ld_object_file_stage_2;align:dword;debugframe:boolean;
 format:byte;nodefaultlibrary:boolean;stripsymbol:boolean;dynamiclinker:string;
-signature:string);
+signature:string;startaddress:Natuint);
 var tempfinal:ld_object_file_final;
     i,j,k,m:Natuint;
     tempformula:ld_formula;
@@ -5275,10 +5272,10 @@ var tempfinal:ld_object_file_final;
     writer32:ld_elf_writer_32;
     writer64:ld_elf_writer_64;
     writeoffset:Natuint;
+    symbolstartoffset:Natuint;
     writestart,writeend:Natuint;
     writenameoffset:Natuint;
     elfbinary:Pbyte;
-    startaddress:Natuint;
     textindex,dynstrindex,dynsymindex,strtabindex,symtabindex:Natuint;
     initindex,finiindex:Natuint;
     initarrayindex,finiarrayindex,preinitarrayindex:Natuint;
@@ -5440,9 +5437,6 @@ begin
  SetLength(tempfinal.DynSym.SymbolName,ldfile.SymTable.SymbolCount);
  SetLength(tempfinal.DynSym.SymbolType,ldfile.SymTable.SymbolCount);
  SetLength(tempfinal.DynSym.SymbolVisible,ldfile.SymTable.SymbolCount);
- SetLength(tempfinal.DynSym.SymbolIndex,ldfile.SymTable.SymbolCount);
- SetLength(tempfinal.DynSym.SymbolSize,ldfile.SymTable.SymbolCount);
- SetLength(tempfinal.DynSym.SymbolValue,ldfile.SymTable.SymbolCount);
  for i:=1 to ldfile.SymTable.SymbolCount do
   begin
    if(ldfile.SymTable.SymbolIndex[i-1]=0) and (ldfile.SymTable.SymbolType[i-1]>0) then
@@ -5453,9 +5447,6 @@ begin
      tempfinal.DynSym.SymbolName[tempfinal.DynSym.SymbolCount-1]:=ldfile.SymTable.SymbolName[i-1];
      tempfinal.DynSym.SymbolType[tempfinal.DynSym.SymbolCount-1]:=ldfile.SymTable.SymbolType[i-1];
      tempfinal.DynSym.SymbolVisible[tempfinal.DynSym.SymbolCount-1]:=ldfile.SymTable.SymbolVisible[i-1];
-     tempfinal.DynSym.SymbolIndex[tempfinal.DynSym.SymbolCount-1]:=ldfile.SymTable.SymbolIndex[i-1];
-     tempfinal.DynSym.SymbolSize[tempfinal.DynSym.SymbolCount-1]:=ldfile.SymTable.SymbolSize[i-1];
-     tempfinal.DynSym.SymbolValue[tempfinal.DynSym.SymbolCount-1]:=ldfile.SymTable.SymbolValue[i-1];
     end;
   end;
  {Set the Got Table and Got Plt Table}
@@ -7407,7 +7398,7 @@ begin
      inc(j);
     end;
    if(j>tempfinal.SecCount) then continue;
-   startaddress:=tempfinal.SecAddress[j-1]+ldfile.SymTable.SymbolValue[i-1];
+   symbolstartoffset:=startaddress+tempfinal.SecAddress[j-1]+ldfile.SymTable.SymbolValue[i-1];
    if(ldbit=1) then
     begin
      if(i=1) then
@@ -7426,7 +7417,7 @@ begin
      Pelf32_symbol_table_entry(ptr2+offset2)^.symbol_other:=ldfile.SymTable.SymbolVisible[i-1];
      Pelf32_symbol_table_entry(ptr2+offset2)^.symbol_section_index:=tempfinal.SecIndex[index-1];
      Pelf32_symbol_table_entry(ptr2+offset2)^.symbol_size:=ldfile.SymTable.SymbolSize[i-1];
-     Pelf32_symbol_table_entry(ptr2+offset2)^.symbol_value:=startaddress;
+     Pelf32_symbol_table_entry(ptr2+offset2)^.symbol_value:=symbolStartOffset;
      inc(offset2,sizeof(elf32_symbol_table_entry));
     end
    else if(ldbit=2) then
@@ -7447,7 +7438,7 @@ begin
      Pelf64_symbol_table_entry(ptr2+offset2)^.symbol_other:=ldfile.SymTable.SymbolVisible[i-1];
      Pelf64_symbol_table_entry(ptr2+offset2)^.symbol_section_index:=tempfinal.SecIndex[index-1];
      Pelf64_symbol_table_entry(ptr2+offset2)^.symbol_size:=ldfile.SymTable.SymbolSize[i-1];
-     Pelf64_symbol_table_entry(ptr2+offset2)^.symbol_value:=startaddress;
+     Pelf64_symbol_table_entry(ptr2+offset2)^.symbol_value:=SymbolStartOffset;
      inc(offset2,sizeof(elf64_symbol_table_entry));
     end;
    j:=1; k:=length(ldfile.SymTable.SymbolName[i-1]);
@@ -7513,7 +7504,6 @@ begin
      inc(k);
     end;
    writepos[2]:=k+2;
-   startaddress:=tempfinal.SecAddress[j-1]+tempfinal.DynSym.SymbolValue[i-1];
    if(ldbit=1) then
     begin
      if(i=1) then
@@ -7673,12 +7663,12 @@ begin
   begin
    if(ldbit=1) then
     begin
-     Pdword(ptr1+offset1)^:=tempfinal.GotTable[j-1];
+     Pdword(ptr1+offset1)^:=startaddress+tempfinal.GotTable[j-1];
      inc(offset1,4);
     end
    else if(ldbit=2) then
     begin
-     Pqword(ptr1+offset1)^:=tempfinal.GotTable[j-1];
+     Pqword(ptr1+offset1)^:=startaddress+tempfinal.GotTable[j-1];
      inc(offset1,8);
     end;
    inc(j);
@@ -7698,12 +7688,12 @@ begin
   begin
    if(ldbit=1) then
     begin
-     Pdword(ptr1+offset1)^:=tempfinal.GotPltTable[j-1];
+     Pdword(ptr1+offset1)^:=startaddress+tempfinal.GotPltTable[j-1];
      inc(offset1,4);
     end
    else if(ldbit=2) then
     begin
-     Pqword(ptr1+offset1)^:=tempfinal.GotPltTable[j-1];
+     Pqword(ptr1+offset1)^:=startaddress+tempfinal.GotPltTable[j-1];
      inc(offset1,8);
     end;
    inc(j);
@@ -7784,7 +7774,7 @@ begin
      else if(tempfinal.SecName[i-1]='.got') or (tempfinal.SecName[i-1]='.got.plt')
      or(tempfinal.SecName[i-1]='.init_array') or (tempfinal.SecName[i-1]='.fini_array')
      or(tempfinal.SecName[i-1]='.preinit_array') then
-     writer32.SectionHeader[i].section_header_entry_size:=8
+     writer32.SectionHeader[i].section_header_entry_size:=4
      else
      writer32.SectionHeader[i].section_header_entry_size:=0;
      writer32.SectionHeader[i].section_header_size:=tempfinal.SecSize[i-1];
@@ -7838,9 +7828,9 @@ begin
      or(tempfinal.SecName[i-1]='.shstrtab') or (tempfinal.SecName[i-1]='.sign') then
      writer32.SectionHeader[i].section_header_address_align:=1
      else
-     writer32.SectionHeader[i].section_header_address_align:=8;
+     writer32.SectionHeader[i].section_header_address_align:=4;
      if(writer32.SectionHeader[i].section_header_flags<>0) then
-     writer32.SectionHeader[i].section_header_address:=tempfinal.SecAddress[i-1]
+     writer32.SectionHeader[i].section_header_address:=startaddress+tempfinal.SecAddress[i-1]
      else
      writer32.SectionHeader[i].section_header_address:=0;
      if(tempfinal.SecName[i-1]='.dynsym') then
@@ -7872,8 +7862,8 @@ begin
        writer32.ProgramHeader[writeindex].program_file_size:=writeend-writestart;
        writer32.ProgramHeader[writeindex].program_memory_size:=ld_align(writeend,align)-writestart;
        writer32.ProgramHeader[writeindex].program_offset:=0;
-       writer32.ProgramHeader[writeindex].program_physical_address:=0;
-       writer32.ProgramHeader[writeindex].program_virtual_address:=0;
+       writer32.ProgramHeader[writeindex].program_physical_address:=startaddress;
+       writer32.ProgramHeader[writeindex].program_virtual_address:=startaddress;
        writer32.ProgramHeader[writeindex].program_flags:=elf_program_header_execute or elf_program_header_alloc;
        writer32.ProgramHeader[writeindex].program_type:=elf_program_header_type_load;
       end
@@ -7886,8 +7876,8 @@ begin
        writer32.ProgramHeader[writeindex].program_file_size:=writeend-writestart;
        writer32.ProgramHeader[writeindex].program_memory_size:=ld_align(writeend,align)-writestart;
        writer32.ProgramHeader[writeindex].program_offset:=writestart;
-       writer32.ProgramHeader[writeindex].program_physical_address:=writestart;
-       writer32.ProgramHeader[writeindex].program_virtual_address:=writestart;
+       writer32.ProgramHeader[writeindex].program_physical_address:=startaddress+writestart;
+       writer32.ProgramHeader[writeindex].program_virtual_address:=startaddress+writestart;
        writer32.ProgramHeader[writeindex].program_flags:=elf_program_header_alloc;
        writer32.ProgramHeader[writeindex].program_type:=elf_program_header_type_interp;
       end
@@ -7900,8 +7890,8 @@ begin
        writer32.ProgramHeader[writeindex].program_file_size:=writeend-writestart;
        writer32.ProgramHeader[writeindex].program_memory_size:=ld_align(writeend,align)-writestart;
        writer32.ProgramHeader[writeindex].program_offset:=writestart;
-       writer32.ProgramHeader[writeindex].program_physical_address:=writestart;
-       writer32.ProgramHeader[writeindex].program_virtual_address:=writestart;
+       writer32.ProgramHeader[writeindex].program_physical_address:=startaddress+writestart;
+       writer32.ProgramHeader[writeindex].program_virtual_address:=startaddress+writestart;
        writer32.ProgramHeader[writeindex].program_flags:=elf_program_header_alloc;
        writer32.ProgramHeader[writeindex].program_type:=elf_program_header_type_load;
       end
@@ -7927,8 +7917,8 @@ begin
        writer32.ProgramHeader[writeindex].program_file_size:=writeend-writestart;
        writer32.ProgramHeader[writeindex].program_memory_size:=ld_align(writeend,align)-writestart;
        writer32.ProgramHeader[writeindex].program_offset:=writestart;
-       writer32.ProgramHeader[writeindex].program_physical_address:=writestart;
-       writer32.ProgramHeader[writeindex].program_virtual_address:=writestart;
+       writer32.ProgramHeader[writeindex].program_physical_address:=startaddress+writestart;
+       writer32.ProgramHeader[writeindex].program_virtual_address:=startaddress+writestart;
        writer32.ProgramHeader[writeindex].program_flags:=elf_program_header_write or elf_program_header_alloc;
        writer32.ProgramHeader[writeindex].program_type:=elf_program_header_type_load;
       end
@@ -7953,8 +7943,8 @@ begin
        writer32.ProgramHeader[writeindex].program_file_size:=writeend-writestart;
        writer32.ProgramHeader[writeindex].program_memory_size:=ld_align(writeend,align)-writestart;
        writer32.ProgramHeader[writeindex].program_offset:=writestart;
-       writer32.ProgramHeader[writeindex].program_physical_address:=writestart;
-       writer32.ProgramHeader[writeindex].program_virtual_address:=writestart;
+       writer32.ProgramHeader[writeindex].program_physical_address:=startaddress+writestart;
+       writer32.ProgramHeader[writeindex].program_virtual_address:=startaddress+writestart;
        writer32.ProgramHeader[writeindex].program_flags:=elf_program_header_write or elf_program_header_alloc;
        writer32.ProgramHeader[writeindex].program_type:=elf_program_header_type_tls;
       end
@@ -7967,8 +7957,8 @@ begin
        writer32.ProgramHeader[writeindex].program_file_size:=writeend-writestart;
        writer32.ProgramHeader[writeindex].program_memory_size:=ld_align(writeend,align)-writestart;
        writer32.ProgramHeader[writeindex].program_offset:=writestart;
-       writer32.ProgramHeader[writeindex].program_physical_address:=writestart;
-       writer32.ProgramHeader[writeindex].program_virtual_address:=writestart;
+       writer32.ProgramHeader[writeindex].program_physical_address:=startaddress+writestart;
+       writer32.ProgramHeader[writeindex].program_virtual_address:=startaddress+writestart;
        writer32.ProgramHeader[writeindex].program_flags:=elf_program_header_write or elf_program_header_alloc;
        writer32.ProgramHeader[writeindex].program_type:=elf_program_header_type_load;
        writer32.ProgramHeader[writeindex].program_type:=elf_program_header_type_dynamic;
@@ -8142,7 +8132,7 @@ begin
      else
      writer64.SectionHeader[i].section_header_address_align:=8;
      if(writer64.SectionHeader[i].section_header_flags<>0) then
-     writer64.SectionHeader[i].section_header_address:=tempfinal.SecAddress[i-1]
+     writer64.SectionHeader[i].section_header_address:=startaddress+tempfinal.SecAddress[i-1]
      else
      writer64.SectionHeader[i].section_header_address:=0;
      if(tempfinal.SecName[i-1]='.dynsym') then
@@ -8174,8 +8164,8 @@ begin
        writer64.ProgramHeader[writeindex].program_file_size:=writeend-writestart;
        writer64.ProgramHeader[writeindex].program_memory_size:=ld_align(writeend,align)-writestart;
        writer64.ProgramHeader[writeindex].program_offset:=0;
-       writer64.ProgramHeader[writeindex].program_physical_address:=0;
-       writer64.ProgramHeader[writeindex].program_virtual_address:=0;
+       writer64.ProgramHeader[writeindex].program_physical_address:=startaddress;
+       writer64.ProgramHeader[writeindex].program_virtual_address:=startaddress;
        writer64.ProgramHeader[writeindex].program_flags:=elf_program_header_execute or elf_program_header_alloc;
        writer64.ProgramHeader[writeindex].program_type:=elf_program_header_type_load;
       end
@@ -8188,8 +8178,8 @@ begin
        writer64.ProgramHeader[writeindex].program_file_size:=writeend-writestart;
        writer64.ProgramHeader[writeindex].program_memory_size:=ld_align(writeend,align)-writestart;
        writer64.ProgramHeader[writeindex].program_offset:=writestart;
-       writer64.ProgramHeader[writeindex].program_physical_address:=writestart;
-       writer64.ProgramHeader[writeindex].program_virtual_address:=writestart;
+       writer64.ProgramHeader[writeindex].program_physical_address:=startaddress+writestart;
+       writer64.ProgramHeader[writeindex].program_virtual_address:=startaddress+writestart;
        writer64.ProgramHeader[writeindex].program_flags:=elf_program_header_alloc;
        writer64.ProgramHeader[writeindex].program_type:=elf_program_header_type_interp;
       end
@@ -8202,8 +8192,8 @@ begin
        writer64.ProgramHeader[writeindex].program_file_size:=writeend-writestart;
        writer64.ProgramHeader[writeindex].program_memory_size:=ld_align(writeend,align)-writestart;
        writer64.ProgramHeader[writeindex].program_offset:=writestart;
-       writer64.ProgramHeader[writeindex].program_physical_address:=writestart;
-       writer64.ProgramHeader[writeindex].program_virtual_address:=writestart;
+       writer64.ProgramHeader[writeindex].program_physical_address:=startaddress+writestart;
+       writer64.ProgramHeader[writeindex].program_virtual_address:=startaddress+writestart;
        writer64.ProgramHeader[writeindex].program_flags:=elf_program_header_alloc;
        writer64.ProgramHeader[writeindex].program_type:=elf_program_header_type_load;
       end
@@ -8229,8 +8219,8 @@ begin
        writer64.ProgramHeader[writeindex].program_file_size:=writeend-writestart;
        writer64.ProgramHeader[writeindex].program_memory_size:=ld_align(writeend,align)-writestart;
        writer64.ProgramHeader[writeindex].program_offset:=writestart;
-       writer64.ProgramHeader[writeindex].program_physical_address:=writestart;
-       writer64.ProgramHeader[writeindex].program_virtual_address:=writestart;
+       writer64.ProgramHeader[writeindex].program_physical_address:=startaddress+writestart;
+       writer64.ProgramHeader[writeindex].program_virtual_address:=startaddress+writestart;
        writer64.ProgramHeader[writeindex].program_flags:=elf_program_header_write or elf_program_header_alloc;
        writer64.ProgramHeader[writeindex].program_type:=elf_program_header_type_load;
       end
@@ -8255,8 +8245,8 @@ begin
        writer64.ProgramHeader[writeindex].program_file_size:=writeend-writestart;
        writer64.ProgramHeader[writeindex].program_memory_size:=ld_align(writeend,align)-writestart;
        writer64.ProgramHeader[writeindex].program_offset:=writestart;
-       writer64.ProgramHeader[writeindex].program_physical_address:=writestart;
-       writer64.ProgramHeader[writeindex].program_virtual_address:=writestart;
+       writer64.ProgramHeader[writeindex].program_physical_address:=startaddress+writestart;
+       writer64.ProgramHeader[writeindex].program_virtual_address:=startaddress+writestart;
        writer64.ProgramHeader[writeindex].program_flags:=elf_program_header_write or elf_program_header_alloc;
        writer64.ProgramHeader[writeindex].program_type:=elf_program_header_type_tls;
       end
@@ -8269,8 +8259,8 @@ begin
        writer64.ProgramHeader[writeindex].program_file_size:=writeend-writestart;
        writer64.ProgramHeader[writeindex].program_memory_size:=writeend-writestart;
        writer64.ProgramHeader[writeindex].program_offset:=writestart;
-       writer64.ProgramHeader[writeindex].program_physical_address:=writestart;
-       writer64.ProgramHeader[writeindex].program_virtual_address:=writestart;
+       writer64.ProgramHeader[writeindex].program_physical_address:=startaddress+writestart;
+       writer64.ProgramHeader[writeindex].program_virtual_address:=startaddress+writestart;
        writer64.ProgramHeader[writeindex].program_flags:=elf_program_header_write or elf_program_header_alloc;
        writer64.ProgramHeader[writeindex].program_type:=elf_program_header_type_load;
        writer64.ProgramHeader[writeindex].program_type:=elf_program_header_type_dynamic;
@@ -8338,7 +8328,7 @@ begin
   end;
 end;
 procedure ld_handle_elf_file_to_efi_file(fn:string;var ldfile:ld_object_file_stage_2;align:dword;
-debugframe:boolean;format:byte;stripsymbol:boolean);
+debugframe:boolean;format:byte;stripsymbol:boolean;startaddress:Natuint);
 var tempfinal:ld_object_file_final;
     i,j,k,m:Natuint;
     tempformula:ld_formula;
@@ -9706,12 +9696,12 @@ begin
     begin
      if(ldbit=1) then
       begin
-       Pdword(ptr+offset1)^:=tempfinal.GotTable[m-1];
+       Pdword(ptr+offset1)^:=startaddress+tempfinal.GotTable[m-1];
        inc(offset1,4);
       end
      else if(ldbit=2) then
       begin
-       Pqword(ptr+offset1)^:=tempfinal.GotTable[m-1];
+       Pqword(ptr+offset1)^:=startaddress+tempfinal.GotTable[m-1];
        inc(offset1,8);
       end;
      inc(m);
@@ -9934,7 +9924,7 @@ begin
    writer.PeHeader.OptionalHeader32.SizeOfStackCommit:=0;
    writer.PeHeader.OptionalHeader32.SizeOfStackReserve:=0;
    writer.PeHeader.OptionalHeader32.Win32VersionValue:=0;
-   writer.PeHeader.OptionalHeader32.ImageBase:=0;
+   writer.PeHeader.OptionalHeader32.ImageBase:=startaddress;
    writer.PeHeader.OptionalHeader32.LoaderFlags:=0;
    writer.PeHeader.OptionalHeader32.CheckSum:=0;
    writer.PeHeader.OptionalHeader32.DLLCharacteristics:=
@@ -10144,7 +10134,7 @@ begin
    writer.PeHeader.OptionalHeader64.SizeOfStackCommit:=0;
    writer.PeHeader.OptionalHeader64.SizeOfStackReserve:=0;
    writer.PeHeader.OptionalHeader64.Win32VersionValue:=0;
-   writer.PeHeader.OptionalHeader64.ImageBase:=0;
+   writer.PeHeader.OptionalHeader64.ImageBase:=startaddress;
    writer.PeHeader.OptionalHeader64.LoaderFlags:=0;
    writer.PeHeader.OptionalHeader64.FileAlignment:=align;
    writer.PeHeader.OptionalHeader64.CheckSum:=0;

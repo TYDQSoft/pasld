@@ -21,6 +21,7 @@ type pasld_param=packed record
                  OutputFileName:string;
                  TotalFileSize:Natuint;
                  verbose:boolean;
+                 startaddress:Natuint;
                  end;
     pasld_filelist=packed record
                    filepath:array of string;
@@ -37,6 +38,30 @@ begin
  fs:=TFileStream.Create(fn,fmOpenRead);
  pasld_io_get_size:=fs.Size;
  fs.Free;
+end;
+function pasld_hex_to_int(str:string):Natuint;
+const hex1:string='0123456789abcdef';
+      hex2:string='0123456789ABCDEF';
+var i,j,len:byte;
+begin
+ len:=length(str); Result:=0;
+ for i:=1 to len do
+  begin
+   j:=1;
+   while(j<=16)do
+    begin
+     if(str[i]=hex1[j]) then break;
+     if(str[i]=hex2[j]) then break;
+     inc(j);
+    end;
+   if(j>16) then
+    begin
+     writeln('ERROR:Address '+str+' is not hexidecimal value.');
+     readln;
+     halt;
+    end;
+   Result:=Result*16+j-1;
+  end;
 end;
 function pasld_search_for_filelist(basepath:string;mask:string;includesubdir:boolean):pasld_filelist;
 var SearchRec:TSearchRec;
@@ -195,6 +220,12 @@ begin
  writeln('             Change the linker accelerate block power to block size you have assigned.');
  writeln('--verbose');
  writeln('             if it is set,it will generate verbose information.');
+ writeln('--verbose-debug');
+ writeln('             if it is set,it will generate verbose debug information.');
+ writeln('--start-address');
+ writeln('             set the section start address of the binary file.');
+ writeln('--version');
+ writeln('             show the version of pasld(Pascal Linker).');
  readln;
 end;
 function pasld_parse_parameter:pasld_param;
@@ -209,6 +240,7 @@ begin
  Result.NeedBlockSize:=3; Result.NeedBlockPower:=3; Result.NeedBlockLevel:=7;
  Result.DebugFrame:=true; Result.OutputFileName:=''; Result.TotalFileSize:=0;
  Result.DynamicLinker:=''; Result.Signature:=''; Result.EntryName:=''; Result.verbose:=false;
+ Result.startaddress:=0;
  SetLength(Result.filename,0); SetLength(Result.dynamiclibraryname,0);
  while(i<=ParamCount)do
   begin
@@ -388,7 +420,15 @@ begin
     end
    else if(LowerCase(ParamStr(i))='--verbose') then
     begin
-     Result.verbose:=true; inc(i);
+     Result.verbose:=true;
+    end
+   else if(LowerCase(ParamStr(i))='--start-address') then
+    begin
+     Result.startaddress:=pasld_hex_to_int(ParamStr(i+1)); inc(i);
+    end
+   else if(LowerCase(ParamStr(i))='--version') then
+    begin
+     writeln('Pascal Linker(pasld) version 0.0.3');
     end
    else
     begin
@@ -520,7 +560,7 @@ begin
    if(param.verbose) then writeln('Generating ELF Files......');
    ld_handle_elf_file(param.OutputFileName,handlefile,param.align,
    false,(3-param.ExecutableType) shl 1,param.NoDefaultLibrary,not param.ReserveSymbol,
-   param.DynamicLinker,param.Signature);
+   param.DynamicLinker,param.Signature,param.startaddress);
    if(param.verbose) then writeln('File '+param.OutputFileName+' generated!');
   end
  else
@@ -529,7 +569,7 @@ begin
    handlefile:=ld_link_file(objlist,param.EntryName,param.SmartLinking);
    if(param.verbose) then writeln('Generating EFI Files......');
    ld_handle_elf_file_to_efi_file(param.OutputFileName,handlefile,param.align,
-   false,param.ExecutableType*2,not param.ReserveSymbol);
+   false,param.ExecutableType*2,not param.ReserveSymbol,param.startaddress);
    if(param.verbose) then writeln('File '+param.OutputFileName+' generated!');
   end;
  FreeMem(ptr);
@@ -547,4 +587,3 @@ begin
   end;
  pasld_execute(param);
 end.
-
