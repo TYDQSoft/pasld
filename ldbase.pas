@@ -59,6 +59,7 @@ type natuint=SizeUint;
      ld_object_file_symbol_table=packed record
                                  SymbolVaildForLink:Pboolean;
                                  SymbolSection:array of string;
+                                 SymbolSectionHash:array of Natuint;
                                  SymbolName:array of string;
                                  SymbolNameHash:array of Natuint;
                                  SymbolBinding:array of byte;
@@ -313,6 +314,70 @@ type natuint=SizeUint;
                                Count:Natuint;
                                StringTotalLength:Natuint;
                                end;
+     ld_relocatable_file_symbol_table=packed record
+                                      SymbolVaildForLink:Pboolean;
+                                      SymbolFileIndex:array of Natuint;
+                                      SymbolSection:array of string;
+                                      SymbolSectionHash:array of Natuint;
+                                      SymbolName:array of string;
+                                      SymbolNameHash:array of Natuint;
+                                      SymbolBinding:array of byte;
+                                      SymbolType:array of byte;
+                                      SymbolSize:array of Natuint;
+                                      SymbolIndex:array of word;
+                                      SymbolValue:array of Natuint;
+                                      SymbolVisible:array of byte;
+                                      SymbolSymIndex:array of Natuint;
+                                      SymbolCount:Natuint;
+                                      end;
+     ld_relocatable_file_stage_1=packed record
+                                 SecFlag:Natuint;
+                                 SecFileIndex:array of Natuint;
+                                 SecUsed:array of boolean;
+                                 SecName:array of string;
+                                 SecHash:array of Natuint;
+                                 SecType:array of byte;
+                                 SecInfo:array of Natuint;
+                                 SecInfoHash:array of Natuint;
+                                 SecContent:array of Pointer;
+                                 SecSize:array of Natuint;
+                                 SecNowIndex:array of Natuint;
+                                 SecCount:Natuint;
+                                 SymTable:ld_relocatable_file_symbol_table;
+                                 end;
+     ld_relocatable_file_relocation=packed record
+                                    SymHash:array of Natuint;
+                                    SymType:array of Natuint;
+                                    SymCount:Natuint;
+                                    end;
+     ld_relocatable_file_temporary=packed record
+                                   Activated:array of boolean;
+                                   SectionName:array of string;
+                                   SectionIndex:array of Natuint;
+                                   SectionHash:array of Natuint;
+                                   SymbolIndex:array of Natuint;
+                                   InfoIndex:array of Natuint;
+                                   Name:array of string;
+                                   NameHash:array of Natuint;
+                                   SectionType:array of byte;
+                                   Count:Natuint;
+                                   relocationhash:array of Natuint;
+                                   relocationActivated:array of boolean;
+                                   relocation:array of ld_relocatable_file_relocation;
+                                   relocationcount:Natuint;
+                                   end;
+     ld_relocatable_file_stage_2=packed record
+                                 SecFlag:Natuint;
+                                 SecOffset:array of Natuint;
+                                 SecName:array of string;
+                                 SecNameIndex:array of Natuint;
+                                 SecOrgIndex:array of Natuint;
+                                 SecType:array of byte;
+                                 SecContent:array of Pointer;
+                                 SecSize:array of Natuint;
+                                 SecCount:Natuint;
+                                 SymTable:ld_relocatable_file_symbol_table;
+                                 end;
 
 var ldArch:word=0;
     ldBit:byte=0;
@@ -323,10 +388,11 @@ const ld_format_none=0;
       ld_format_static_library=1;
       ld_format_dynamic_library=2;
       ld_format_executable_pie=4;
-      ld_format_efi_application=6;
-      ld_format_efi_boot_driver=8;
-      ld_format_efi_runtime_driver=10;
-      ld_format_efi_rom=12;
+      ld_format_relocatable=6;
+      ld_format_efi_application=8;
+      ld_format_efi_boot_driver=10;
+      ld_format_efi_runtime_driver=12;
+      ld_format_efi_rom=14;
       ld_aarch64_add_or_sub_fixed_value=$22;
       ld_aarch64_ld_or_st_immediate_9_post_index=1;
       ld_aarch64_ld_or_st_immediate_9_pre_index=3;
@@ -340,6 +406,8 @@ const ld_format_none=0;
 
 procedure ld_handle_dynamic_library(fn:dynstrarray);
 function ld_generate_file_list(fn:dynstrarray):ld_object_file_list;
+procedure ld_generate_relocatable_file(fn:string;var objlist:ld_object_file_list;EntryName:string;
+SmartLinking:boolean);
 function ld_link_file(var objlist:ld_object_file_list;EntryName:string;SmartLinking:boolean):ld_object_file_stage_2;
 procedure ld_handle_elf_file(fn:string;var ldfile:ld_object_file_stage_2;align:dword;debugframe:boolean;
 format:byte;nodefaultlibrary:boolean;stripsymbol:boolean;dynamiclinker:string;
@@ -379,6 +447,16 @@ begin
       end;
     end;
   end;
+end;
+function ld_section_get_prefix(str:string):string;
+var i,len:Natuint;
+begin
+ i:=2; len:=length(str);
+ for i:=2 to len do
+  begin
+   if(str[i]='.') then exit(Copy(str,1,i-1));
+  end;
+ ld_section_get_prefix:=str;
 end;
 function generate_hash_from_string(str:string;section:boolean=false):Natuint;
 begin
@@ -1452,8 +1530,64 @@ begin
  SetLength(filelist.item,0);
  filelist.Count:=0;
 end;
+procedure ld_handle_symbol_table_for_relocatable(var middlelist:ld_relocatable_file_temporary;
+EntryHash:Natuint;var symtable:ld_object_hash_table;var symsectable:ld_object_hash_table;
+const relocationcount:Natuint;var relocationtable:ld_object_hash_table);
+var i,j,k:Natuint;
+    secarray:dynnatuintarray;
+begin
+ if(EntryHash=0) then exit;
+ secarray:=ld_search_for_index_array(
+ symtable,dynnatuintarray(middlelist.NameHash),EntryHash);
+ j:=1;
+ while(j<=length(secarray))do
+  begin
+   if(EntryHash=middlelist.NameHash[secarray[j-1]-1]) and
+   (middlelist.Activated[secarray[j-1]-1]=false) then break;
+   inc(j);
+  end;
+ if(j>length(secarray)) then i:=0 else i:=secarray[j-1];
+ if(i<>0) then
+  begin
+   middlelist.Activated[i-1]:=true;
+   if(middlelist.SectionType[i-1]<>1)and(middlelist.SectionType[i-1]<>5)
+   and(middlelist.SectionType[i-1]<>9)and(middlelist.SectionType[i-1]<>17) then exit;
+   secarray:=ld_search_for_index_array(symsectable,
+   dynnatuintarray(middlelist.SectionHash),middlelist.SectionHash[i-1]);
+   for j:=1 to length(secarray) do
+    begin
+     if(i<>secarray[j-1]) and (middlelist.NameHash[i-1]<>middlelist.NameHash[secarray[j-1]-1]) then
+      begin
+       middlelist.Activated[secarray[j-1]-1]:=true;
+      end
+     else if(i<>secarray[j-1]) and (middlelist.NameHash[i-1]=middlelist.NameHash[secarray[j-1]-1]) then
+      begin
+       writeln('ERROR:Multiple definition of '+middlelist.Name[secarray[j-1]-1]+' found,linking failed.');
+       readln;
+       halt;
+      end;
+    end;
+   if(relocationcount>0) then
+    begin
+     secarray:=ld_search_for_index_array(relocationtable,
+     dynnatuintarray(middlelist.relocationhash),middlelist.SectionHash[i-1]);
+     j:=1;
+     while(j<=length(secarray))do
+      begin
+       for k:=1 to middlelist.relocation[secarray[j-1]-1].SymCount do
+        begin
+         if(middlelist.relocation[secarray[j-1]-1].SymHash[k-1]<>0) then
+         ld_handle_symbol_table_for_relocatable(
+         middlelist,middlelist.relocation[secarray[j-1]-1].SymHash[k-1],
+         symtable,symsectable,relocationcount,relocationtable);
+        end;
+       inc(j);
+      end;
+    end;
+  end;
+end;
 procedure ld_handle_symbol_table(var middlelist:ld_object_file_temporary;EntryHash:Natuint;
-SmartLinking:boolean;var symtable:ld_object_hash_table;var symsectable:ld_object_hash_table;
+var symtable:ld_object_hash_table;var symsectable:ld_object_hash_table;
 const relcount:Natuint;var reltable:ld_object_hash_table;
 const relacount:Natuint;var relatable:ld_object_hash_table);
 var i,j,k:Natuint;
@@ -1481,8 +1615,8 @@ begin
    dynnatuintarray(middlelist.SymTable.SymbolSectionHash),middlelist.SymTable.SymbolSectionHash[i-1]);
    for j:=1 to length(secarray) do
     begin
-     if(middlelist.SymTable.SymbolNameHash[i-1]<>middlelist.SymTable.SymbolNameHash[secarray[j-1]-1])
-     and(middlelist.SymTable.SymbolValue[i-1]=middlelist.SymTable.SymbolValue[secarray[j-1]-1])
+     if(secarray[j-1]<>i)and
+     (middlelist.SymTable.SymbolNameHash[i-1]<>middlelist.SymTable.SymbolNameHash[secarray[j-1]-1])
      and(middlelist.SymTable.SymbolQuotedByMain[secarray[j-1]-1]=false)then
       begin
        middlelist.SymTable.SymbolQuotedByMain[secarray[j-1]-1]:=true;
@@ -1490,8 +1624,6 @@ begin
      else if(middlelist.SymTable.SymbolNameHash[i-1]=middlelist.SymTable.SymbolNameHash[secarray[j-1]-1])
      and(i<>secarray[j-1]) then
       begin
-       writeln(middlelist.SymTable.SymbolName[i-1],' ',
-       middlelist.SymTable.SymbolName[secarray[j-1]-1]);
        writeln('ERROR:Multiple definition of '+middlelist.SymTable.SymbolName[i-1]+' found,cannot linking.');
        readln;
        halt;
@@ -1508,7 +1640,7 @@ begin
         begin
          if(middlelist.SecRel[secarray[j-1]-1].SymHash[k-1]<>0) then
          ld_handle_symbol_table(middlelist,middlelist.SecRel[secarray[j-1]-1].SymHash[k-1],
-         SmartLinking,symtable,symsectable,relcount,reltable,relacount,relatable);
+         symtable,symsectable,relcount,reltable,relacount,relatable);
         end;
        inc(j);
       end;
@@ -1524,11 +1656,1238 @@ begin
         begin
          if(middlelist.SecRela[secarray[j-1]-1].SymHash[k-1]<>0) then
          ld_handle_symbol_table(middlelist,middlelist.SecRela[secarray[j-1]-1].SymHash[k-1],
-         SmartLinking,symtable,symsectable,relcount,reltable,relacount,relatable);
+         symtable,symsectable,relcount,reltable,relacount,relatable);
         end;
        inc(j);
       end;
     end;
+  end;
+end;
+procedure ld_generate_relocatable_file(fn:string;var objlist:ld_object_file_list;EntryName:string;
+SmartLinking:boolean);
+var i,j,k,m,n,a,b:Natuint;
+    relocationcount:Natuint;
+    {For Hash Tables}
+    hashtable1,hashtable2,hashtable3:ld_object_hash_table;
+    tempnum1,tempnum2:Natuint;
+    {For Prehandler Only}
+    Order:array of string;
+    GenOrder:array of string;
+    SecCount:array of Natuint;
+    SymCount:array of Natuint;
+    SecPin:Natuint;
+    {For Linking Stage 1 Only}
+    templist1:ld_relocatable_file_stage_1;
+    sectionptr:elf_section_header_ptr;
+    sectioncount:Natuint;
+    totalsectioncount:Natuint;
+    symbolcount:Natuint;
+    TotalSymbolCount:Natuint;
+    StartAddress:Pointer;
+    tempptr:Pointer;
+    offset:Natuint;
+    tempstr:string;
+    {For SmartLinking Only}
+    EntryHash:Natuint;
+    middlelist:ld_relocatable_file_temporary;
+    reptr:Pointer;
+    resize:Natuint;
+    recurptr:Natuint;
+    {For Linking Stage 2 Only}
+    templist2:ld_relocatable_file_stage_2;
+    NeedSection:Natuint;
+    {For ELF Writer Only}
+    writer32:ld_elf_writer_32;
+    writer64:ld_elf_writer_64;
+    stringsize:Natuint;
+    ptr1,ptr2,ptr3:Pointer;
+    offset1,offset2,offset3:Natuint;
+    startoffset:Natuint;
+    symtabindex,strtabindex,shstrtabindex:word;
+    elfbinary:PByte;
+    writeoffset:Natuint;
+begin
+ {Initialize the necessary function}
+ Order:=['.text','.rela.text','.rel.text',
+ '.init_array',
+ '.init','.rela.init','.rel.init',
+ '.fini_array',
+ '.fini','.rela.fini','.rel.fini','.rodata','.data','.bss','.tdata','.tbss',
+ '.debug_frame','rela.debug_frame','rel.debug_frame','.preinit_array'];
+ EntryHash:=generate_hash_from_string(EntryName);
+ TotalSymbolCount:=0; SymbolCount:=0; TotalSectionCount:=0; SectionCount:=0;
+ templist1.SecFlag:=0; relocationcount:=0;
+ SetLength(SecCount,objlist.Count); SetLength(SymCount,objlist.Count);
+ {Reading the File}
+ for i:=1 to objlist.Count do
+  begin
+   sectionptr:=objlist.item[i-1].Ptr.SecPtr; offset:=0;
+   if(objlist.bit=2) then
+    begin
+     sectioncount:=objlist.item[i-1].Ptr.HdrPtr.hdr32^.elf_section_header_number;
+     templist1.SecFlag:=templist1.SecFlag or objlist.item[i-1].Ptr.HdrPtr.hdr32^.elf_flags;
+     {Handle the symbol first}
+     StartAddress:=objlist.item[i-1].Ptr.symptr.sym32;
+     SymbolCount:=objlist.item[i-1].Ptr.symcount;
+     if(i=1) then templist1.SymTable.SymbolVaildForLink:=tydq_getmem(SymbolCount)
+     else tydq_reallocmem(templist1.SymTable.SymbolVaildForLink,TotalSymbolCount+SymbolCount);
+     SetLength(templist1.SymTable.SymbolBinding,TotalSymbolCount+SymbolCount);
+     SetLength(templist1.SymTable.SymbolName,TotalSymbolCount+SymbolCount);
+     SetLength(templist1.SymTable.SymbolNameHash,TotalSymbolCount+SymbolCount);
+     SetLength(templist1.SymTable.SymbolSize,TotalSymbolCount+SymbolCount);
+     SetLength(templist1.SymTable.SymbolType,TotalSymbolCount+SymbolCount);
+     SetLength(templist1.SymTable.SymbolValue,TotalSymbolCount+SymbolCount);
+     SetLength(templist1.SymTable.SymbolSection,TotalSymbolCount+SymbolCount);
+     SetLength(templist1.SymTable.SymbolSectionHash,TotalSymbolCount+SymbolCount);
+     SetLength(templist1.SymTable.SymbolIndex,TotalSymbolCount+SymbolCount);
+     SetLength(templist1.SymTable.SymbolSymIndex,TotalSymbolCount+SymbolCount);
+     SetLength(templist1.SymTable.SymbolVisible,TotalSymbolCount+SymbolCount);
+     templist1.SymTable.SymbolCount:=TotalSymbolCount; SymbolCount:=0;
+     for j:=1 to objlist.item[i-1].Ptr.symcount do
+      begin
+       tempptr:=StartAddress+Offset;
+       inc(SymbolCount);
+       templist1.SymTable.SymbolType[TotalSymbolCount+SymbolCount-1]:=
+       elf_symbol_type_type(Pelf32_symbol_table_entry(tempptr)^.symbol_info);
+       templist1.SymTable.SymbolIndex[TotalSymbolCount+SymbolCount-1]:=
+       Pelf32_symbol_table_entry(tempptr)^.symbol_section_index;
+       if(templist1.SymTable.SymbolIndex[TotalSymbolCount+SymbolCount-1]>0)
+       and(templist1.SymTable.SymbolIndex[TotalSymbolCount+SymbolCount-1]<=Word($FFF0)) then
+        begin
+         templist1.SymTable.SymbolSection[TotalSymbolCount+SymbolCount-1]:=
+         elf_get_name(objlist.item[i-1].Ptr.shstrtabptr,
+         Pelf32_section_header(SectionPtr.sec32ptr+
+         Pelf32_symbol_table_entry(tempptr)^.symbol_section_index)^.section_header_name);
+         templist1.SymTable.SymbolSection[TotalSymbolCount+SymbolCount-1]:=
+         templist1.SymTable.SymbolSection[TotalSymbolCount+SymbolCount-1]+ld_create_name(i);
+        end
+       else
+        begin
+         templist1.SymTable.SymbolSection[TotalSymbolCount+SymbolCount-1]:='';
+        end;
+       if(templist1.SymTable.SymbolType[TotalSymbolCount+SymbolCount-1]<>elf_symbol_type_section) then
+        begin
+         templist1.SymTable.SymbolName[TotalSymbolCount+SymbolCount-1]:=
+         elf_get_name(objlist.item[i-1].Ptr.strtabptr,
+         Pelf32_symbol_table_entry(tempptr)^.symbol_name);
+         if(Copy(templist1.SymTable.SymbolName[TotalSymbolCount+SymbolCount-1],1,1)='.') then
+          begin
+           templist1.SymTable.SymbolName[TotalSymbolCount+SymbolCount-1]:=
+           templist1.SymTable.SymbolName[TotalSymbolCount+SymbolCount-1]+ld_create_name(i)+
+           ld_create_name(j,true);
+          end;
+        end
+       else
+        begin
+         templist1.SymTable.SymbolName[TotalSymbolCount+SymbolCount-1]:=
+         templist1.SymTable.SymbolSection[TotalSymbolCount+SymbolCount-1];
+        end;
+       templist1.SymTable.SymbolNameHash[TotalSymbolCount+SymbolCount-1]:=
+       generate_hash_from_string(templist1.SymTable.SymbolName[TotalSymbolCount+SymbolCount-1]);
+       templist1.SymTable.SymbolSectionHash[TotalSymbolCount+SymbolCount-1]:=
+       generate_hash_from_string(templist1.SymTable.SymbolSection[TotalSymbolCount+SymbolCount-1],true);
+       templist1.SymTable.SymbolVaildForLink[TotalSymbolCount+SymbolCount-1]:=
+       ((templist1.SymTable.SymbolIndex[TotalSymbolCount+SymbolCount-1]>0) or
+       (templist1.SymTable.SymbolIndex[TotalSymbolCount+SymbolCount-1]>0))
+       and(templist1.SymTable.SymbolIndex[TotalSymbolCount+SymbolCount-1]<=Word($FFF0));
+       templist1.SymTable.SymbolBinding[TotalSymbolCount+SymbolCount-1]:=
+       elf_symbol_type_bind(Pelf32_symbol_table_entry(tempptr)^.symbol_info);
+       templist1.SymTable.SymbolValue[TotalSymbolCount+SymbolCount-1]:=
+       Pelf32_symbol_table_entry(tempptr)^.symbol_value;
+       templist1.SymTable.SymbolSize[TotalSymbolCount+SymbolCount-1]:=
+       Pelf32_symbol_table_entry(tempptr)^.symbol_size;
+       templist1.SymTable.SymbolSymIndex[TotalSymbolCount+SymbolCount-1]:=j-1;
+       templist1.SymTable.SymbolVisible[TotalSymbolCount+SymbolCount-1]:=
+       elf_symbol_type_visibility(Pelf32_symbol_table_entry(tempptr)^.symbol_other);
+       inc(offset,sizeof(elf32_symbol_table_entry));
+      end;
+     inc(totalsymbolcount,SymbolCount);
+     SymCount[i-1]:=totalsymbolcount;
+     {Then Handle the other sections}
+     SetLength(templist1.SecFileIndex,totalsectioncount+sectioncount);
+     SetLength(templist1.SecUsed,totalsectioncount+sectioncount);
+     SetLength(templist1.SecName,totalsectioncount+sectioncount);
+     SetLength(templist1.SecHash,totalsectioncount+sectioncount);
+     SetLength(templist1.SecContent,totalsectioncount+sectioncount);
+     SetLength(templist1.SecInfo,totalsectioncount+sectioncount);
+     SetLength(templist1.SecInfoHash,totalsectioncount+sectioncount);
+     SetLength(templist1.SecNowIndex,totalsectioncount+sectioncount);
+     SetLength(templist1.SecSize,totalsectioncount+sectioncount);
+     SetLength(templist1.SecType,totalsectioncount+sectioncount);
+     templist1.SecCount:=totalsectioncount;
+     for j:=1 to sectioncount do
+      begin
+       inc(templist1.SecCount);
+       if(Pelf32_section_header(sectionptr.sec32ptr+j-1)^.section_header_type=
+       elf_section_type_null) or
+       (Pelf32_section_header(sectionptr.sec32ptr+j-1)^.section_header_type=
+       elf_section_type_strtab) or
+       (Pelf32_section_header(sectionptr.sec32ptr+j-1)^.section_header_type=
+       elf_section_type_symtab) then continue;
+       if(Pelf32_section_header(sectionptr.sec32ptr+j-1)^.section_header_type=
+       elf_section_type_reloc) or
+       (Pelf32_section_header(sectionptr.sec32ptr+j-1)^.section_header_type=
+       elf_section_type_rela) then inc(relocationcount);
+       templist1.SecFileIndex[totalsectioncount+j-1]:=i;
+       templist1.SecName[totalsectioncount+j-1]:=
+       elf_get_name(objlist.item[i-1].Ptr.shstrtabptr,
+       Pelf32_section_header(sectionptr.sec32ptr+j-1)^.section_header_name);
+       templist1.SecName[totalsectioncount+j-1]:=templist1.SecName[totalsectioncount+j-1]+
+       ld_create_name(i);
+       templist1.SecHash[totalsectioncount+j-1]:=
+       generate_hash_from_string(templist1.SecName[totalsectioncount+j-1],true);
+       for k:=1 to 20 do
+        begin
+         if(faststrcomp_segment(templist1.SecName[totalsectioncount+j-1],1,length(Order[k-1]),
+         Order[k-1])) then
+          begin
+           templist1.SecType[totalsectioncount+j-1]:=k; break;
+          end;
+        end;
+       if(Pelf32_section_header(sectionptr.sec32ptr+j-1)^.section_header_info=0) then
+        begin
+         templist1.SecInfo[totalsectioncount+j-1]:=0;
+         templist1.SecInfoHash[totalsectioncount+j-1]:=0;
+        end
+       else
+        begin
+         tempstr:=elf_get_name(objlist.item[i-1].Ptr.shstrtabptr,
+         Pelf64_section_header(sectionptr.sec32ptr+
+         Pelf32_section_header(sectionptr.sec32ptr+j-1)^.section_header_info)^.section_header_name);
+         tempstr:=tempstr+ld_create_name(i);
+         templist1.SecInfo[totalsectioncount+j-1]:=TotalSectionCount+
+         Pelf32_section_header(sectionptr.sec32ptr+j-1)^.section_header_info;
+         templist1.SecInfoHash[totalsectioncount+j-1]:=generate_hash_from_string(tempstr,true);
+        end;
+       templist1.SecSize[totalsectioncount+j-1]:=
+       Pelf32_section_header(sectionptr.sec32ptr+j-1)^.section_header_size;
+       templist1.SecContent[totalsectioncount+j-1]:=(objlist.item[i-1].Ptr.CntPtr+j-1)^.b;
+      end;
+     inc(totalsectioncount,sectioncount);
+     SecCount[i-1]:=totalsectioncount;
+    end
+   else if(objlist.bit=3) then
+    begin
+     sectioncount:=objlist.item[i-1].Ptr.HdrPtr.hdr64^.elf_section_header_number;
+     templist1.SecFlag:=templist1.SecFlag or objlist.item[i-1].Ptr.HdrPtr.hdr64^.elf_flags;
+     {Handle the symbol first}
+     StartAddress:=objlist.item[i-1].Ptr.symptr.sym64;
+     SymbolCount:=objlist.item[i-1].Ptr.symcount;
+     if(i=1) then templist1.SymTable.SymbolVaildForLink:=tydq_getmem(SymbolCount)
+     else tydq_reallocmem(templist1.SymTable.SymbolVaildForLink,TotalSymbolCount+SymbolCount);
+     SetLength(templist1.SymTable.SymbolBinding,TotalSymbolCount+SymbolCount);
+     SetLength(templist1.SymTable.SymbolName,TotalSymbolCount+SymbolCount);
+     SetLength(templist1.SymTable.SymbolNameHash,TotalSymbolCount+SymbolCount);
+     SetLength(templist1.SymTable.SymbolSize,TotalSymbolCount+SymbolCount);
+     SetLength(templist1.SymTable.SymbolType,TotalSymbolCount+SymbolCount);
+     SetLength(templist1.SymTable.SymbolValue,TotalSymbolCount+SymbolCount);
+     SetLength(templist1.SymTable.SymbolSection,TotalSymbolCount+SymbolCount);
+     SetLength(templist1.SymTable.SymbolSectionHash,TotalSymbolCount+SymbolCount);
+     SetLength(templist1.SymTable.SymbolIndex,TotalSymbolCount+SymbolCount);
+     SetLength(templist1.SymTable.SymbolSymIndex,TotalSymbolCount+SymbolCount);
+     SetLength(templist1.SymTable.SymbolVisible,TotalSymbolCount+SymbolCount);
+     templist1.SymTable.SymbolCount:=TotalSymbolCount; SymbolCount:=0;
+     for j:=1 to objlist.item[i-1].Ptr.symcount do
+      begin
+       tempptr:=StartAddress+Offset;
+       inc(SymbolCount);
+       templist1.SymTable.SymbolType[TotalSymbolCount+SymbolCount-1]:=
+       elf_symbol_type_type(Pelf64_symbol_table_entry(tempptr)^.symbol_info);
+       templist1.SymTable.SymbolIndex[TotalSymbolCount+SymbolCount-1]:=
+       Pelf64_symbol_table_entry(tempptr)^.symbol_section_index;
+       if(templist1.SymTable.SymbolIndex[TotalSymbolCount+SymbolCount-1]>0)
+       and(templist1.SymTable.SymbolIndex[TotalSymbolCount+SymbolCount-1]<=Word($FFF0)) then
+        begin
+         templist1.SymTable.SymbolSection[TotalSymbolCount+SymbolCount-1]:=
+         elf_get_name(objlist.item[i-1].Ptr.shstrtabptr,
+         Pelf64_section_header(SectionPtr.sec64ptr+
+         Pelf64_symbol_table_entry(tempptr)^.symbol_section_index)^.section_header_name);
+         templist1.SymTable.SymbolSection[TotalSymbolCount+SymbolCount-1]:=
+         templist1.SymTable.SymbolSection[TotalSymbolCount+SymbolCount-1]+ld_create_name(i);
+        end
+       else
+        begin
+         templist1.SymTable.SymbolSection[TotalSymbolCount+SymbolCount-1]:='';
+        end;
+       if(templist1.SymTable.SymbolType[TotalSymbolCount+SymbolCount-1]<>elf_symbol_type_section) then
+        begin
+         templist1.SymTable.SymbolName[TotalSymbolCount+SymbolCount-1]:=
+         elf_get_name(objlist.item[i-1].Ptr.strtabptr,
+         Pelf64_symbol_table_entry(tempptr)^.symbol_name);
+         if(Copy(templist1.SymTable.SymbolName[TotalSymbolCount+SymbolCount-1],1,1)='.') then
+          begin
+           templist1.SymTable.SymbolName[TotalSymbolCount+SymbolCount-1]:=
+           templist1.SymTable.SymbolName[TotalSymbolCount+SymbolCount-1]+ld_create_name(i)+
+           ld_create_name(j,true);
+          end;
+        end
+       else
+        begin
+         templist1.SymTable.SymbolName[TotalSymbolCount+SymbolCount-1]:=
+         templist1.SymTable.SymbolSection[TotalSymbolCount+SymbolCount-1];
+        end;
+       templist1.SymTable.SymbolNameHash[TotalSymbolCount+SymbolCount-1]:=
+       generate_hash_from_string(templist1.SymTable.SymbolName[TotalSymbolCount+SymbolCount-1]);
+       templist1.SymTable.SymbolSectionHash[TotalSymbolCount+SymbolCount-1]:=
+       generate_hash_from_string(templist1.SymTable.SymbolSection[TotalSymbolCount+SymbolCount-1],true);
+       templist1.SymTable.SymbolVaildForLink[TotalSymbolCount+SymbolCount-1]:=
+       ((templist1.SymTable.SymbolIndex[TotalSymbolCount+SymbolCount-1]>0) or
+       (templist1.SymTable.SymbolIndex[TotalSymbolCount+SymbolCount-1]>0))
+       and(templist1.SymTable.SymbolIndex[TotalSymbolCount+SymbolCount-1]<=Word($FFF0));
+       templist1.SymTable.SymbolBinding[TotalSymbolCount+SymbolCount-1]:=
+       elf_symbol_type_bind(Pelf64_symbol_table_entry(tempptr)^.symbol_info);
+       templist1.SymTable.SymbolValue[TotalSymbolCount+SymbolCount-1]:=
+       Pelf64_symbol_table_entry(tempptr)^.symbol_value;
+       templist1.SymTable.SymbolSize[TotalSymbolCount+SymbolCount-1]:=
+       Pelf64_symbol_table_entry(tempptr)^.symbol_size;
+       templist1.SymTable.SymbolSymIndex[TotalSymbolCount+SymbolCount-1]:=j-1;
+       templist1.SymTable.SymbolVisible[TotalSymbolCount+SymbolCount-1]:=
+       elf_symbol_type_visibility(Pelf64_symbol_table_entry(tempptr)^.symbol_other);
+       inc(offset,sizeof(elf64_symbol_table_entry));
+      end;
+     inc(totalsymbolcount,SymbolCount);
+     SymCount[i-1]:=totalsymbolcount;
+     {Then Handle the other sections}
+     SetLength(templist1.SecFileIndex,totalsectioncount+sectioncount);
+     SetLength(templist1.SecUsed,totalsectioncount+sectioncount);
+     SetLength(templist1.SecName,totalsectioncount+sectioncount);
+     SetLength(templist1.SecHash,totalsectioncount+sectioncount);
+     SetLength(templist1.SecContent,totalsectioncount+sectioncount);
+     SetLength(templist1.SecInfoHash,totalsectioncount+sectioncount);
+     SetLength(templist1.SecNowIndex,totalsectioncount+sectioncount);
+     SetLength(templist1.SecInfo,totalsectioncount+sectioncount);
+     SetLength(templist1.SecSize,totalsectioncount+sectioncount);
+     SetLength(templist1.SecType,totalsectioncount+sectioncount);
+     templist1.SecCount:=totalsectioncount;
+     for j:=1 to sectioncount do
+      begin
+       inc(templist1.SecCount);
+       if(Pelf64_section_header(sectionptr.sec64ptr+j-1)^.section_header_type=
+       elf_section_type_null) or
+       (Pelf64_section_header(sectionptr.sec64ptr+j-1)^.section_header_type=
+       elf_section_type_strtab) or
+       (Pelf64_section_header(sectionptr.sec64ptr+j-1)^.section_header_type=
+       elf_section_type_symtab) then continue;
+       if(Pelf64_section_header(sectionptr.sec64ptr+j-1)^.section_header_type=
+       elf_section_type_reloc) or
+       (Pelf64_section_header(sectionptr.sec64ptr+j-1)^.section_header_type=
+       elf_section_type_rela) then inc(relocationcount);
+       templist1.SecFileIndex[totalsectioncount+j-1]:=i;
+       templist1.SecName[totalsectioncount+j-1]:=
+       elf_get_name(objlist.item[i-1].Ptr.shstrtabptr,
+       Pelf64_section_header(sectionptr.sec64ptr+j-1)^.section_header_name);
+       templist1.SecName[totalsectioncount+j-1]:=templist1.SecName[totalsectioncount+j-1]+
+       ld_create_name(i);
+       templist1.SecHash[totalsectioncount+j-1]:=
+       generate_hash_from_string(templist1.SecName[totalsectioncount+j-1],true);
+       for k:=1 to 20 do
+        begin
+         if(faststrcomp_segment(templist1.SecName[totalsectioncount+j-1],1,length(Order[k-1]),
+         Order[k-1])) then
+          begin
+           templist1.SecType[totalsectioncount+j-1]:=k; break;
+          end;
+        end;
+       if(Pelf64_section_header(sectionptr.sec64ptr+j-1)^.section_header_info=0) then
+        begin
+         templist1.SecInfo[totalsectioncount+j-1]:=0;
+         templist1.SecInfoHash[totalsectioncount+j-1]:=0;
+        end
+       else
+        begin
+         tempstr:=elf_get_name(objlist.item[i-1].Ptr.shstrtabptr,
+         Pelf64_section_header(sectionptr.sec64ptr+
+         Pelf64_section_header(sectionptr.sec64ptr+j-1)^.section_header_info)^.section_header_name);
+         tempstr:=tempstr+ld_create_name(i);
+         templist1.SecInfo[totalsectioncount+j-1]:=TotalSectionCount+
+         Pelf64_section_header(sectionptr.sec64ptr+j-1)^.section_header_info;
+         templist1.SecInfoHash[totalsectioncount+j-1]:=generate_hash_from_string(tempstr,true);
+        end;
+       templist1.SecSize[totalsectioncount+j-1]:=
+       Pelf64_section_header(sectionptr.sec64ptr+j-1)^.section_header_size;
+       templist1.SecContent[totalsectioncount+j-1]:=(objlist.item[i-1].Ptr.CntPtr+j-1)^.b;
+      end;
+     inc(totalsectioncount,sectioncount);
+     SecCount[i-1]:=totalsectioncount;
+    end;
+  end;
+ {Then Generate the temporary variables}
+ templist1.SymTable.SymbolCount:=totalsymbolcount;
+ SetLength(middlelist.SectionIndex,templist1.SymTable.SymbolCount);
+ SetLength(middlelist.NameHash,templist1.SymTable.SymbolCount);
+ SetLength(middlelist.SectionHash,templist1.SymTable.SymbolCount);
+ SetLength(middlelist.SectionName,templist1.SymTable.SymbolCount);
+ SetLength(middlelist.Name,templist1.SymTable.SymbolCount);
+ SetLength(middlelist.SectionType,templist1.SymTable.SymbolCount);
+ SetLength(middlelist.SymbolIndex,templist1.SymTable.SymbolCount);
+ SetLength(middlelist.InfoIndex,templist1.SymTable.SymbolCount);
+ SetLength(middlelist.Activated,templist1.SymTable.SymbolCount);
+ middlelist.Count:=0; SecPin:=1;
+ for i:=1 to templist1.SymTable.SymbolCount do
+  begin
+   if(templist1.SymTable.SymbolVaildForLink[i-1]=false) then continue;
+   if(templist1.SymTable.SymbolName[i-1]='') then continue;
+   if(templist1.SymTable.SymbolName[i-1][1]='$') then continue;
+   inc(middlelist.Count);
+   if(SymCount[SecPin-1]<i) and (SecPin<objlist.Count) then
+    begin
+     inc(SecPin);
+    end;
+   if(SecPin<=1) then
+    begin
+     tempnum1:=0; tempnum2:=0;
+    end
+   else
+    begin
+     tempnum1:=SymCount[SecPin-2]; tempnum2:=SecCount[SecPin-2];
+    end;
+   middlelist.NameHash[middlelist.count-1]:=templist1.SymTable.SymbolNameHash[i-1];
+   middlelist.Name[middlelist.count-1]:=templist1.SymTable.SymbolName[i-1];
+   middlelist.SectionName[middlelist.count-1]:=templist1.SymTable.SymbolSection[i-1];
+   middlelist.SymbolIndex[middlelist.count-1]:=tempnum1+templist1.SymTable.SymbolSymIndex[i-1];
+   middlelist.SectionHash[middlelist.count-1]:=templist1.SymTable.SymbolSectionHash[i-1];
+   middlelist.SectionIndex[middlelist.count-1]:=tempnum2+templist1.SymTable.SymbolIndex[i-1];
+   middlelist.SectionType[middlelist.Count-1]:=templist1.SecType[middlelist.SectionIndex[middlelist.count-1]];
+   middlelist.InfoIndex[middlelist.count-1]:=templist1.SecInfo[middlelist.SectionIndex[middlelist.count-1]];
+  end;
+ {Then Generate the hash table for symbol name and related sections}
+ hashtable1.BucketCount:=middlelist.Count*2+1;
+ hashtable1.ChainCount:=middlelist.Count;
+ SetLength(hashtable1.BucketItem,hashtable1.BucketCount);
+ SetLength(hashtable1.BucketUsed,hashtable1.BucketCount);
+ SetLength(hashtable1.ChainItem,hashtable1.ChainCount);
+ SetLength(hashtable1.ChainUsed,hashtable1.ChainCount);
+ hashtable2.BucketCount:=middlelist.Count*2+1;
+ hashtable2.ChainCount:=middlelist.Count;
+ SetLength(hashtable2.BucketItem,hashtable2.BucketCount);
+ SetLength(hashtable2.BucketUsed,hashtable2.BucketCount);
+ SetLength(hashtable2.ChainItem,hashtable2.ChainCount);
+ SetLength(hashtable2.ChainUsed,hashtable2.ChainCount);
+ for i:=1 to middlelist.count do
+  begin
+   tempnum1:=middlelist.NameHash[i-1];
+   if(hashtable1.BucketUsed[tempnum1 mod hashtable1.BucketCount]=false) then
+    begin
+     hashtable1.BucketItem[tempnum1 mod hashtable1.BucketCount]:=i-1;
+     hashtable1.BucketUsed[tempnum1 mod hashtable1.BucketCount]:=true;
+    end
+   else
+    begin
+     tempnum2:=hashtable1.BucketItem[tempnum1 mod hashtable1.BucketCount];
+     while(hashtable1.ChainUsed[tempnum2])do
+      begin
+       tempnum2:=hashtable1.ChainItem[tempnum2];
+      end;
+     hashtable1.ChainItem[tempnum2]:=i-1; hashtable1.ChainUsed[tempnum2]:=true;
+    end;
+   tempnum1:=middlelist.SectionHash[i-1];
+   if(hashtable2.BucketUsed[tempnum1 mod hashtable2.BucketCount]=false) then
+    begin
+     hashtable2.BucketItem[tempnum1 mod hashtable2.BucketCount]:=i-1;
+     hashtable2.BucketUsed[tempnum1 mod hashtable2.BucketCount]:=true;
+    end
+   else
+    begin
+     tempnum2:=hashtable2.BucketItem[tempnum1 mod hashtable2.BucketCount];
+     while(hashtable2.ChainUsed[tempnum2])do
+      begin
+       tempnum2:=hashtable2.ChainItem[tempnum2];
+      end;
+     hashtable2.ChainItem[tempnum2]:=i-1; hashtable2.ChainUsed[tempnum2]:=true;
+    end;
+  end;
+ {Then Generate the temporary relocation}
+ SetLength(middlelist.relocation,relocationcount);
+ SetLength(middlelist.relocationActivated,relocationcount);
+ SetLength(middlelist.relocationhash,relocationcount);
+ middlelist.relocationcount:=0;
+ for i:=1 to templist1.SecCount do
+  begin
+   if(templist1.SecType[i-1]=2) or (templist1.SecType[i-1]=6) or
+   (templist1.SecType[i-1]=10) or (templist1.SecType[i-1]=18) or
+   (templist1.SecType[i-1]=3) or (templist1.SecType[i-1]=7) or
+   (templist1.SecType[i-1]=11) or (templist1.SecType[i-1]=19) then
+    begin
+     m:=templist1.SecFileIndex[i-1];
+     if(m=1) then n:=0 else n:=SecCount[m-2];
+     inc(middlelist.relocationcount);
+     middlelist.relocationHash[middlelist.relocationcount-1]:=templist1.SecInfoHash[i-1];
+     reptr:=templist1.SecContent[i-1]; resize:=templist1.SecSize[i-1]; recurptr:=0; k:=1;
+     if(ldbit=1) then
+      begin
+       if(templist1.SecType[i-1]=2) or (templist1.SecType[i-1]=6) or
+       (templist1.SecType[i-1]=10) or (templist1.SecType[i-1]=18) then
+        begin
+         SetLength(middlelist.relocation
+         [middlelist.relocationcount-1].SymHash,resize div 12);
+         SetLength(middlelist.relocation
+         [middlelist.relocationcount-1].SymType,resize div 12);
+         middlelist.relocation[middlelist.relocationcount-1].SymCount:=resize div 12;
+         while(recurptr<resize)do
+          begin
+           a:=elf32_reloc_symbol(Pelf32_rela(reptr+recurptr)^.Info);
+           middlelist.relocation[middlelist.relocationcount-1].SymHash[k-1]:=
+           templist1.SymTable.SymbolNameHash[a];
+           middlelist.relocation[middlelist.relocationcount-1].SymType[k-1]:=
+           elf32_reloc_type(Pelf32_rela(reptr+recurptr)^.Info);
+           inc(recurptr,12); inc(k);
+          end;
+        end
+       else
+        begin
+         SetLength(middlelist.relocation
+         [middlelist.relocationcount-1].SymHash,resize div 8);
+         SetLength(middlelist.relocation
+         [middlelist.relocationcount-1].SymType,resize div 8);
+         middlelist.relocation[middlelist.relocationcount-1].SymCount:=resize div 8;
+         while(recurptr<resize)do
+          begin
+           a:=elf32_reloc_symbol(Pelf32_rela(reptr+recurptr)^.Info);
+           middlelist.relocation[middlelist.relocationcount-1].SymHash[k-1]:=
+           templist1.SymTable.SymbolNameHash[a];
+           middlelist.relocation[middlelist.relocationcount-1].SymType[k-1]:=
+           elf32_reloc_type(Pelf32_rela(reptr+recurptr)^.Info);
+           inc(recurptr,8); inc(k);
+          end;
+        end;
+      end
+     else if(ldbit=2) then
+      begin
+       if(templist1.SecType[i-1]=2) or (templist1.SecType[i-1]=6) or
+       (templist1.SecType[i-1]=10) or (templist1.SecType[i-1]=18) then
+        begin
+         SetLength(middlelist.relocation
+         [middlelist.relocationcount-1].SymHash,resize div 24);
+         SetLength(middlelist.relocation
+         [middlelist.relocationcount-1].SymType,resize div 24);
+         middlelist.relocation[middlelist.relocationcount-1].SymCount:=resize div 24;
+         while(recurptr<resize)do
+          begin
+           a:=elf64_reloc_symbol(Pelf64_rela(reptr+recurptr)^.Info);
+           middlelist.relocation[middlelist.relocationcount-1].SymHash[k-1]:=
+           templist1.SymTable.SymbolNameHash[a];
+           middlelist.relocation[middlelist.relocationcount-1].SymType[k-1]:=
+           elf64_reloc_type(Pelf64_rela(reptr+recurptr)^.Info);
+           inc(recurptr,24); inc(k);
+          end;
+        end
+       else
+        begin
+         SetLength(middlelist.relocation
+         [middlelist.relocationcount-1].SymHash,resize div 16);
+         SetLength(middlelist.relocation
+         [middlelist.relocationcount-1].SymType,resize div 16);
+         middlelist.relocation[middlelist.relocationcount-1].SymCount:=resize div 16;
+         while(recurptr<resize)do
+          begin
+           a:=elf64_reloc_symbol(Pelf64_rela(reptr+recurptr)^.Info);
+           middlelist.relocation[middlelist.relocationcount-1].SymHash[k-1]:=
+           templist1.SymTable.SymbolNameHash[a];
+           middlelist.relocation[middlelist.relocationcount-1].SymType[k-1]:=
+           elf64_reloc_type(Pelf64_rela(reptr+recurptr)^.Info);
+           inc(recurptr,16); inc(k);
+          end;
+        end;
+      end;
+    end;
+  end;
+ {Then generate the hash table of relocation}
+ hashtable3.BucketCount:=middlelist.relocationcount*2+1;
+ hashtable3.ChainCount:=middlelist.relocationcount;
+ SetLength(hashtable3.BucketItem,hashtable3.BucketCount);
+ SetLength(hashtable3.BucketUsed,hashtable3.BucketCount);
+ SetLength(hashtable3.ChainItem,hashtable3.ChainCount);
+ SetLength(hashtable3.ChainUsed,hashtable3.ChainCount);
+ for i:=1 to middlelist.relocationcount do
+  begin
+   tempnum1:=middlelist.relocationhash[i-1];
+   if(hashtable3.BucketUsed[tempnum1 mod hashtable3.BucketCount]=false) then
+    begin
+     hashtable3.BucketItem[tempnum1 mod hashtable3.BucketCount]:=i-1;
+     hashtable3.BucketUsed[tempnum1 mod hashtable3.BucketCount]:=true;
+    end
+   else
+    begin
+     tempnum2:=hashtable3.BucketItem[tempnum1 mod hashtable3.BucketCount];
+     while(hashtable3.ChainUsed[tempnum2])do
+      begin
+       tempnum2:=hashtable3.ChainItem[tempnum2];
+      end;
+     hashtable3.ChainItem[tempnum2]:=i-1; hashtable3.ChainUsed[tempnum2]:=true;
+    end;
+  end;
+ {Then SmartLinking the sections}
+ NeedSection:=0;
+ if(SmartLinking) then
+  begin
+   ld_handle_symbol_table_for_relocatable(middlelist,EntryHash,hashtable1,hashtable2,
+   middlelist.relocationcount,hashtable3);
+   for i:=1 to middlelist.Count do
+    begin
+     if(middlelist.Activated[i-1]) then
+      begin
+       if(templist1.SecUsed[middlelist.SectionIndex[i-1]]=false) then
+        begin
+         templist1.SecUsed[middlelist.SectionIndex[i-1]]:=true;
+         inc(NeedSection);
+        end;
+      end;
+    end;
+   for i:=1 to templist1.SecCount do
+    begin
+     if(templist1.SecUsed[templist1.SecInfo[i-1]]) then
+      begin
+       templist1.SecUsed[i-1]:=true;
+       inc(NeedSection);
+      end;
+    end;
+  end;
+ {Then Copy the used section to stage 2}
+ GenOrder:=['.text','.init_array','.init','.fini_array','.fini','.rodata','.data','.bss','.tdata','.tbss',
+ '.debug_frame','.preinit_array'];
+ if(SmartLinking=false) then NeedSection:=TotalSectionCount;
+ templist2.SecFlag:=templist1.SecFlag;
+ templist2.SecCount:=0;
+ SetLength(templist2.SecName,NeedSection+3);
+ SetLength(templist2.SecType,NeedSection+3);
+ SetLength(templist2.SecOffset,NeedSection+3);
+ SetLength(templist2.SecContent,NeedSection+3);
+ SetLength(templist2.SecSize,NeedSection+3);
+ SetLength(templist2.SecNameIndex,NeedSection+3);
+ SetLength(templist2.SecOrgIndex,NeedSection+3);
+ for i:=1 to length(GenOrder) do
+  begin
+   if(i=1) then
+    begin
+     for j:=1 to templist1.SecCount do
+      begin
+       if(templist1.SecUsed[j-1]<>SmartLinking) or (templist1.SecSize[j-1]=0) then continue;
+       if(templist1.SecType[j-1]=1) or (templist1.SecType[j-1]=2) or (templist1.SecType[j-1]=3) then
+        begin
+         inc(templist2.SecCount);
+         templist1.SecNowIndex[j-1]:=templist2.SecCount;
+         templist2.SecName[templist2.SecCount-1]:=templist1.SecName[j-1];
+         templist2.SecType[templist2.SecCount-1]:=templist1.SecType[j-1];
+         templist2.SecSize[templist2.SecCount-1]:=templist1.SecSize[j-1];
+         templist2.SecContent[templist2.SecCount-1]:=templist1.SecContent[j-1];
+         templist2.SecOrgIndex[templist2.SecCount-1]:=j;
+        end;
+      end;
+    end
+   else if(i<3) then
+    begin
+     for j:=1 to templist1.SecCount do
+      begin
+       if(templist1.SecUsed[j-1]<>SmartLinking) or (templist1.SecSize[j-1]=0) then continue;
+       if(templist1.SecType[j-1]=4) then
+        begin
+         inc(templist2.SecCount);
+         templist1.SecNowIndex[j-1]:=templist2.SecCount;
+         templist2.SecName[templist2.SecCount-1]:=templist1.SecName[j-1];
+         templist2.SecType[templist2.SecCount-1]:=templist1.SecType[j-1];
+         templist2.SecSize[templist2.SecCount-1]:=templist1.SecSize[j-1];
+         templist2.SecContent[templist2.SecCount-1]:=templist1.SecContent[j-1];
+         templist2.SecOrgIndex[templist2.SecCount-1]:=j;
+        end;
+      end;
+    end
+   else if(i=3) then
+    begin
+     for j:=1 to templist1.SecCount do
+      begin
+       if(templist1.SecUsed[j-1]<>SmartLinking) or (templist1.SecSize[j-1]=0) then continue;
+       if(templist1.SecType[j-1]=5) or (templist1.SecType[j-1]=6) or (templist1.SecType[j-1]=7) then
+        begin
+         inc(templist2.SecCount);
+         templist1.SecNowIndex[j-1]:=templist2.SecCount;
+         templist2.SecName[templist2.SecCount-1]:=templist1.SecName[j-1];
+         templist2.SecType[templist2.SecCount-1]:=templist1.SecType[j-1];
+         templist2.SecSize[templist2.SecCount-1]:=templist1.SecSize[j-1];
+         templist2.SecContent[templist2.SecCount-1]:=templist1.SecContent[j-1];
+         templist2.SecOrgIndex[templist2.SecCount-1]:=j;
+        end;
+      end;
+    end
+   else if(i<5) then
+    begin
+     for j:=1 to templist1.SecCount do
+      begin
+       if(templist1.SecUsed[j-1]<>SmartLinking) or (templist1.SecSize[j-1]=0) then continue;
+       if(templist1.SecType[j-1]=8) then
+        begin
+         inc(templist2.SecCount);
+         templist1.SecNowIndex[j-1]:=templist2.SecCount;
+         templist2.SecName[templist2.SecCount-1]:=templist1.SecName[j-1];
+         templist2.SecType[templist2.SecCount-1]:=templist1.SecType[j-1];
+         templist2.SecSize[templist2.SecCount-1]:=templist1.SecSize[j-1];
+         templist2.SecContent[templist2.SecCount-1]:=templist1.SecContent[j-1];
+         templist2.SecOrgIndex[templist2.SecCount-1]:=j;
+        end;
+      end;
+    end
+   else if(i=5) then
+    begin
+     for j:=1 to templist1.SecCount do
+      begin
+       if(templist1.SecUsed[j-1]<>SmartLinking) or (templist1.SecSize[j-1]=0) then continue;
+       if(templist1.SecType[j-1]=9) or (templist1.SecType[j-1]=10) or (templist1.SecType[j-1]=11) then
+        begin
+         inc(templist2.SecCount);
+         templist1.SecNowIndex[j-1]:=templist2.SecCount;
+         templist2.SecName[templist2.SecCount-1]:=templist1.SecName[j-1];
+         templist2.SecType[templist2.SecCount-1]:=templist1.SecType[j-1];
+         templist2.SecSize[templist2.SecCount-1]:=templist1.SecSize[j-1];
+         templist2.SecContent[templist2.SecCount-1]:=templist1.SecContent[j-1];
+         templist2.SecOrgIndex[templist2.SecCount-1]:=j;
+        end;
+      end;
+    end
+   else if(i<11) then
+    begin
+     for j:=1 to templist1.SecCount do
+      begin
+       if(templist1.SecUsed[j-1]<>SmartLinking) or (templist1.SecSize[j-1]=0) then continue;
+       if(templist1.SecType[j-1]=5+i) then
+        begin
+         inc(templist2.SecCount);
+         templist1.SecNowIndex[j-1]:=templist2.SecCount;
+         templist2.SecName[templist2.SecCount-1]:=templist1.SecName[j-1];
+         templist2.SecType[templist2.SecCount-1]:=templist1.SecType[j-1];
+         templist2.SecSize[templist2.SecCount-1]:=templist1.SecSize[j-1];
+         templist2.SecContent[templist2.SecCount-1]:=templist1.SecContent[j-1];
+         templist2.SecOrgIndex[templist2.SecCount-1]:=j;
+        end;
+      end;
+    end
+   else if(i=11) then
+    begin
+     for j:=1 to templist1.SecCount do
+      begin
+       if(templist1.SecUsed[j-1]<>SmartLinking) or (templist1.SecSize[j-1]=0) then continue;
+       if(templist1.SecType[j-1]=17) or (templist1.SecType[j-1]=18) or (templist1.SecType[j-1]=19) then
+        begin
+         inc(templist2.SecCount);
+         templist1.SecNowIndex[j-1]:=templist2.SecCount;
+         templist2.SecName[templist2.SecCount-1]:=templist1.SecName[j-1];
+         templist2.SecType[templist2.SecCount-1]:=templist1.SecType[j-1];
+         templist2.SecSize[templist2.SecCount-1]:=templist1.SecSize[j-1];
+         templist2.SecContent[templist2.SecCount-1]:=templist1.SecContent[j-1];
+         templist2.SecOrgIndex[templist2.SecCount-1]:=j;
+        end;
+      end;
+    end
+   else
+    begin
+     for j:=1 to templist1.SecCount do
+      begin
+       if(templist1.SecUsed[j-1]<>SmartLinking) or (templist1.SecSize[j-1]=0) then continue;
+       if(templist1.SecType[j-1]=8+i) then
+        begin
+         inc(templist2.SecCount);
+         templist1.SecNowIndex[j-1]:=templist2.SecCount;
+         templist2.SecName[templist2.SecCount-1]:=templist1.SecName[j-1];
+         templist2.SecType[templist2.SecCount-1]:=templist1.SecType[j-1];
+         templist2.SecSize[templist2.SecCount-1]:=templist1.SecSize[j-1];
+         templist2.SecContent[templist2.SecCount-1]:=templist1.SecContent[j-1];
+         templist2.SecOrgIndex[templist2.SecCount-1]:=j;
+        end;
+      end;
+    end;
+  end;
+ {Then Generate the Symbol Table For Relocatable file}
+ i:=1;
+ SetLength(templist2.SymTable.SymbolName,middlelist.Count);
+ SetLength(templist2.SymTable.SymbolValue,middlelist.Count);
+ SetLength(templist2.SymTable.SymbolBinding,middlelist.Count);
+ SetLength(templist2.SymTable.SymbolSize,middlelist.Count);
+ SetLength(templist2.SymTable.SymbolType,middlelist.Count);
+ SetLength(templist2.SymTable.SymbolIndex,middlelist.Count);
+ SetLength(templist2.SymTable.SymbolVisible,middlelist.Count);
+ templist2.SymTable.SymbolCount:=0;
+ for i:=1 to middlelist.Count do
+  begin
+   j:=middlelist.SymbolIndex[i-1]; k:=middlelist.SectionIndex[i-1];
+   if(templist1.SecNowIndex[k]<>0) then
+    begin
+     if(templist1.SymTable.SymbolType[j]=elf_symbol_type_section)
+     or(templist1.SymTable.SymbolType[j]=elf_symbol_type_file)
+     or(templist1.SymTable.SymbolType[j]=elf_symbol_type_common) then continue;
+     inc(templist2.SymTable.SymbolCount);
+     templist2.SymTable.SymbolName[templist2.SymTable.SymbolCount-1]:=middlelist.Name[i-1];
+     templist2.SymTable.SymbolValue[templist2.SymTable.SymbolCount-1]:=
+     templist1.SymTable.SymbolValue[j];
+     templist2.SymTable.SymbolVisible[templist2.SymTable.SymbolCount-1]:=
+     templist1.SymTable.SymbolVisible[j];
+     templist2.SymTable.SymbolIndex[templist2.SymTable.SymbolCount-1]:=templist1.SecNowIndex[k];
+     templist2.SymTable.SymbolSize[templist2.SymTable.SymbolCount-1]:=templist1.SymTable.SymbolSize[j];
+     templist2.SymTable.SymbolBinding[templist2.SymTable.SymbolCount-1]:=
+     templist1.SymTable.SymbolBinding[j];
+     templist2.SymTable.SymbolValue[templist2.SymTable.SymbolCount-1]:=
+     templist1.SymTable.SymbolValue[j];
+     templist2.SymTable.SymbolType[templist2.SymTable.SymbolCount-1]:=
+     templist1.SymTable.SymbolType[j];
+     if(templist2.SymTable.SymbolCount>1) and
+     (templist2.SymTable.SymbolIndex[templist2.SymTable.SymbolCount-2]=
+      templist2.SymTable.SymbolIndex[templist2.SymTable.SymbolCount-1]) and
+     (templist2.SymTable.SymbolValue[templist2.SymTable.SymbolCount-2]=
+      templist2.SymTable.SymbolValue[templist2.SymTable.SymbolCount-1]) and
+     (templist2.SymTable.SymbolSize[templist2.SymTable.SymbolCount-2]<>0) and
+     (templist2.SymTable.SymbolSize[templist2.SymTable.SymbolCount-1]=0) then
+      begin
+       templist2.SymTable.SymbolSize[templist2.SymTable.SymbolCount-1]:=templist1.SecSize[k-1];
+      end;
+    end;
+  end;
+ {Then Generate the empty .symtab,.strtab}
+ stringsize:=1; i:=1;
+ while(i<=templist2.SymTable.SymbolCount)do
+  begin
+   inc(stringsize,length(templist2.SymTable.SymbolName[i-1])+1); inc(i);
+  end;
+ inc(templist2.SecCount);
+ templist2.SecName[templist2.SecCount-1]:='.symtab';
+ templist2.SecType[templist2.SecCount-1]:=elf_section_type_symtab;
+ if(ldbit=1) then
+ templist2.SecSize[templist2.SecCount-1]:=
+ (templist2.SymTable.SymbolCount+1)*sizeof(elf32_symbol_table_entry)
+ else
+ templist2.SecSize[templist2.SecCount-1]:=
+ (templist2.SymTable.SymbolCount+1)*sizeof(elf64_symbol_table_entry);
+ templist2.SecContent[templist2.SecCount-1]:=tydq_getmem(templist2.SecSize[templist2.SecCount-1]);
+ ptr1:=templist2.SecContent[templist2.SecCount-1];
+ symtabindex:=templist2.SecCount-1;
+ inc(templist2.SecCount);
+ templist2.SecName[templist2.SecCount-1]:='.strtab';
+ templist2.SecType[templist2.SecCount-1]:=elf_section_type_strtab;
+ templist2.SecSize[templist2.SecCount-1]:=stringsize;
+ templist2.SecContent[templist2.SecCount-1]:=tydq_getmem(stringsize);
+ ptr2:=templist2.SecContent[templist2.SecCount-1];
+ strtabindex:=templist2.SecCount-1;
+ {Generate the empty .shstrtab}
+ inc(templist2.SecCount);
+ templist2.SecName[templist2.SecCount-1]:='.shstrtab';
+ stringsize:=1; i:=1;
+ while(i<=templist2.SecCount)do
+  begin
+   inc(stringsize,length(templist2.SecName[i-1])+1); inc(i);
+  end;
+ templist2.SecType[templist2.SecCount-1]:=elf_section_type_strtab;
+ templist2.SecSize[templist2.SecCount-1]:=stringsize;
+ templist2.SecContent[templist2.SecCount-1]:=tydq_getmem(stringsize);
+ ptr3:=templist2.SecContent[templist2.SecCount-1];
+ shstrtabindex:=templist2.SecCount-1;
+ {Inject the symbol content and their name to the .symtab or .strtab}
+ i:=1; PChar(ptr2)^:=#0; offset1:=0; offset2:=1;
+ while(i<=templist2.SymTable.SymbolCount)do
+  begin
+   if(ldbit=1) then
+    begin
+     if(i=1) then
+      begin
+       Pelf32_symbol_table_entry(ptr1+offset1)^.symbol_name:=0;
+       Pelf32_symbol_table_entry(ptr1+offset1)^.symbol_other:=0;
+       Pelf32_symbol_table_entry(ptr1+offset1)^.symbol_section_index:=0;
+       Pelf32_symbol_table_entry(ptr1+offset1)^.symbol_size:=0;
+       Pelf32_symbol_table_entry(ptr1+offset1)^.symbol_info:=0;
+       Pelf32_symbol_table_entry(ptr1+offset1)^.symbol_value:=0;
+       inc(offset1,sizeof(elf32_symbol_table_entry));
+      end;
+     Pelf32_symbol_table_entry(ptr1+offset1)^.symbol_name:=offset2;
+     Pelf32_symbol_table_entry(ptr1+offset1)^.symbol_other:=
+     templist2.SymTable.SymbolVisible[i-1];
+     Pelf32_symbol_table_entry(ptr1+offset1)^.symbol_section_index:=
+     templist2.SymTable.SymbolIndex[i-1];
+     Pelf32_symbol_table_entry(ptr1+offset1)^.symbol_size:=
+     templist2.SymTable.SymbolSize[i-1];
+     Pelf32_symbol_table_entry(ptr1+offset1)^.symbol_info:=
+     templist2.SymTable.SymbolBinding[i-1] shl 4+templist2.SymTable.SymbolType[i-1];
+     Pelf32_symbol_table_entry(ptr1+offset1)^.symbol_value:=
+     templist2.SymTable.SymbolValue[i-1];
+     inc(offset1,sizeof(elf32_symbol_table_entry));
+    end
+   else if(ldbit=2) then
+    begin
+     if(i=1) then
+      begin
+       Pelf64_symbol_table_entry(ptr1+offset1)^.symbol_name:=0;
+       Pelf64_symbol_table_entry(ptr1+offset1)^.symbol_other:=0;
+       Pelf64_symbol_table_entry(ptr1+offset1)^.symbol_section_index:=0;
+       Pelf64_symbol_table_entry(ptr1+offset1)^.symbol_size:=0;
+       Pelf64_symbol_table_entry(ptr1+offset1)^.symbol_info:=0;
+       Pelf64_symbol_table_entry(ptr1+offset1)^.symbol_value:=0;
+       inc(offset1,sizeof(elf64_symbol_table_entry));
+      end;
+     Pelf64_symbol_table_entry(ptr1+offset1)^.symbol_name:=offset2;
+     Pelf64_symbol_table_entry(ptr1+offset1)^.symbol_other:=
+     templist2.SymTable.SymbolVisible[i-1];
+     Pelf64_symbol_table_entry(ptr1+offset1)^.symbol_section_index:=
+     templist2.SymTable.SymbolIndex[i-1];
+     Pelf64_symbol_table_entry(ptr1+offset1)^.symbol_size:=
+     templist2.SymTable.SymbolSize[i-1];
+     Pelf64_symbol_table_entry(ptr1+offset1)^.symbol_info:=
+     templist2.SymTable.SymbolBinding[i-1] shl 4+templist2.SymTable.SymbolType[i-1];
+     Pelf64_symbol_table_entry(ptr1+offset1)^.symbol_value:=
+     templist2.SymTable.SymbolValue[i-1];
+     inc(offset1,sizeof(elf64_symbol_table_entry));
+    end;
+   j:=1; k:=length(templist2.SymTable.SymbolName[i-1]);
+   while(j<=k)do
+    begin
+     PChar(ptr2+offset2)^:=templist2.SymTable.SymbolName[i-1][j]; inc(j); inc(offset2);
+    end;
+   PChar(ptr2+offset2)^:=#0; inc(offset2);
+   inc(i);
+  end;
+ {Set the File Offset of the sections}
+ if(ldbit=1) then startoffset:=sizeof(elf32_header)
+ else if(ldbit=2) then startoffset:=sizeof(elf64_header);
+ i:=1;
+ while(i<=templist2.SecCount)do
+  begin
+   templist2.SecOffset[i-1]:=startoffset;
+   if(templist2.SecType[i-1]<>8) and (templist2.SecType[i-1]<>10) then
+    begin
+     inc(startoffset,templist2.SecSize[i-1]);
+    end;
+   inc(i);
+  end;
+ {Inject the section header content to .shstrtab}
+ i:=1; offset3:=1; PChar(ptr3)^:=#0;
+ while(i<=templist2.SecCount)do
+  begin
+   j:=1; k:=length(templist2.SecName[i-1]);
+   templist2.SecNameIndex[i-1]:=offset3;
+   while(j<=k)do
+    begin
+     PChar(ptr3+offset3)^:=templist2.SecName[i-1][j]; inc(j); inc(offset3);
+    end;
+   PChar(ptr3+offset3)^:=#0; inc(offset3);
+   inc(i);
+  end;
+ {Then manipulate the writer to write the elf}
+ if(ldbit=1) then
+  begin
+   for i:=1 to 16 do writer32.Header.elf_id[i]:=0;
+   writer32.Header.elf_id[1]:=$7F;
+   writer32.Header.elf_id[2]:=Byte('E');
+   writer32.Header.elf_id[3]:=Byte('L');
+   writer32.Header.elf_id[4]:=Byte('F');
+   writer32.Header.elf_id[5]:=1;
+   writer32.Header.elf_id[6]:=1;
+   writer32.Header.elf_id[7]:=1;
+   writer32.Header.elf_id[8]:=elf_os_abi_system_v;
+   writer32.Header.elf_id[9]:=1;
+   writer32.Header.elf_entry:=0;
+   writer32.Header.elf_machine:=ldarch;
+   writer32.Header.elf_flags:=templist2.SecFlag;
+   writer32.Header.elf_header_size:=sizeof(elf32_header);
+   writer32.Header.elf_version:=1;
+   writer32.Header.elf_type:=elf_type_relocatable;
+   writer32.Header.elf_program_header_number:=0;
+   writer32.Header.elf_program_header_offset:=0;
+   writer32.Header.elf_program_header_size:=0;
+   writer32.Header.elf_section_header_size:=sizeof(elf32_section_header);
+   writer32.Header.elf_section_header_offset:=startoffset;
+   writer32.Header.elf_section_header_number:=templist2.SecCount+1;
+   writer32.Header.elf_section_header_string_table_index:=templist2.SecCount;
+   SetLength(writer32.SectionHeader,templist2.SecCount+1);
+   SetLength(writer32.Content,templist2.SecCount+1);
+   writer32.SectionHeader[0].section_header_name:=0;
+   writer32.SectionHeader[0].section_header_address:=0;
+   writer32.SectionHeader[0].section_header_address_align:=0;
+   writer32.SectionHeader[0].section_header_entry_size:=0;
+   writer32.SectionHeader[0].section_header_flags:=0;
+   writer32.SectionHeader[0].section_header_link:=0;
+   writer32.SectionHeader[0].section_header_offset:=0;
+   writer32.SectionHeader[0].section_header_type:=0;
+   writer32.Content[0]:=nil;
+   i:=1;
+   while(i<=templist2.SecCount)do
+    begin
+     writer32.SectionHeader[i].section_header_name:=templist2.SecNameIndex[i-1];
+     writer32.Content[i]:=templist2.SecContent[i-1];
+     tempstr:=ld_section_get_prefix(templist2.SecName[i-1]);
+     if(tempstr='.symtab') then
+      begin
+       writer32.SectionHeader[i].section_header_address_align:=ldbit shl 2;
+      end
+     else if(tempstr='.strtab') or (tempstr='.shstrtab') then
+      begin
+       writer32.SectionHeader[i].section_header_address_align:=1;
+      end
+     else
+      begin
+       writer32.SectionHeader[i].section_header_address_align:=ldbit shl 2;
+      end;
+     writer32.SectionHeader[i].section_header_address:=0;
+     writer32.SectionHeader[i].section_header_size:=templist2.SecSize[i-1];
+     writer32.SectionHeader[i].section_header_offset:=templist2.SecOffset[i-1];
+     if(tempstr='.text') or (tempstr='.init')
+     or(tempstr='.fini') then
+      begin
+       writer32.SectionHeader[i].section_header_flags:=
+       elf_section_flag_executable or elf_section_flag_alloc;
+      end
+     else if(tempstr='.rela') or (tempstr='.rel') then
+      begin
+       writer32.SectionHeader[i].section_header_flags:=elf_section_flag_info_link;
+       writer32.SectionHeader[i].section_header_info:=
+       templist1.SecNowIndex[templist1.SecInfo[templist2.SecOrgIndex[i-1]-1]];
+       writer32.SectionHeader[i].section_header_link:=
+       templist1.SecNowIndex[templist1.SecInfo[templist2.SecOrgIndex[i-1]-1]];
+      end
+     else if(tempstr<>'.debug_frame') then
+      begin
+       writer32.SectionHeader[i].section_header_flags:=elf_section_flag_write or elf_section_flag_alloc;
+      end;
+     if(tempstr='.symtab') then
+      begin
+       writer32.SectionHeader[i].section_header_link:=strtabindex;
+      end;
+     writer32.SectionHeader[i].section_header_size:=templist2.SecSize[i-1];
+     if(tempstr='.rela.') then
+      begin
+       writer32.SectionHeader[i].section_header_entry_size:=sizeof(elf32_rela);
+      end
+     else if(tempstr='.rel') then
+      begin
+       writer32.SectionHeader[i].section_header_entry_size:=sizeof(elf32_rel);
+      end
+     else
+      begin
+       writer32.SectionHeader[i].section_header_entry_size:=0;
+      end;
+     if(tempstr='.text') or (tempstr='.init') or (tempstr='.fini') or (tempstr='.debug_frame') then
+      begin
+       writer32.SectionHeader[i].section_header_type:=elf_section_type_progbit;
+      end
+     else if(tempstr='.init_array') then
+      begin
+       writer32.SectionHeader[i].section_header_type:=elf_section_type_init_array;
+      end
+     else if(tempstr='.fini_array') then
+      begin
+       writer32.SectionHeader[i].section_header_type:=elf_section_type_fini_array;
+      end
+     else if(tempstr='.preinit_array') then
+      begin
+       writer32.SectionHeader[i].section_header_type:=elf_section_type_preinit_array;
+      end
+     else if(tempstr='.rela') then
+      begin
+       writer32.SectionHeader[i].section_header_type:=elf_section_type_rela;
+      end
+     else if(tempstr='.rel') then
+      begin
+       writer32.SectionHeader[i].section_header_type:=elf_section_type_reloc;
+      end
+     else if(tempstr='.bss') or (tempstr='.tbss') then
+      begin
+       writer32.SectionHeader[i].section_header_type:=elf_section_type_nobit;
+      end
+     else if(tempstr='.symtab') then
+      begin
+       writer32.SectionHeader[i].section_header_type:=elf_section_type_symtab;
+      end
+     else if(tempstr='.strtab') or (tempstr='.shstrtab') then
+      begin
+       writer32.SectionHeader[i].section_header_type:=elf_section_type_strtab;
+      end
+     else
+      begin
+       writer32.SectionHeader[i].section_header_type:=elf_section_type_progbit;
+      end;
+     inc(i);
+    end;
+   {Create the memory of elf}
+   elfbinary:=tydq_allocmem(writer32.Header.elf_section_header_offset+
+   writer32.Header.elf_section_header_number*writer32.Header.elf_section_header_size);
+   writeoffset:=0;
+   tydq_move(writer32.Header,(elfbinary+writeoffset)^,sizeof(elf32_header));
+   i:=1;
+   while(i<=writer32.Header.elf_section_header_number)do
+    begin
+     if(writer32.Content[i-1]<>nil) then
+      begin
+       writeoffset:=writer32.SectionHeader[i-1].section_header_offset;
+       tydq_move(writer32.Content[i-1]^,(elfbinary+writeoffset)^,
+       writer32.SectionHeader[i-1].section_header_size);
+      end;
+     inc(i);
+    end;
+   i:=1; writeoffset:=writer32.Header.elf_section_header_offset;
+   tydq_move(writer32.SectionHeader[0],(elfbinary+writeoffset)^,sizeof(elf32_section_header));
+   inc(writeoffset,sizeof(elf32_section_header));
+   while(i<=writer32.Header.elf_section_header_number-1)do
+    begin
+     tydq_move(writer32.SectionHeader[i],(elfbinary+writeoffset)^,sizeof(elf32_section_header));
+     inc(writeoffset,sizeof(elf32_section_header));
+     inc(i);
+    end;
+   ld_io_write(fn,1,elfbinary^,writer32.Header.elf_section_header_offset+
+   writer32.Header.elf_section_header_number*writer32.Header.elf_section_header_size);
+  end
+ else if(ldbit=2) then
+  begin
+   for i:=1 to 16 do writer64.Header.elf_id[i]:=0;
+   writer64.Header.elf_id[1]:=$7F;
+   writer64.Header.elf_id[2]:=Byte('E');
+   writer64.Header.elf_id[3]:=Byte('L');
+   writer64.Header.elf_id[4]:=Byte('F');
+   writer64.Header.elf_id[5]:=2;
+   writer64.Header.elf_id[6]:=1;
+   writer64.Header.elf_id[7]:=1;
+   writer64.Header.elf_id[8]:=elf_os_abi_system_v;
+   writer64.Header.elf_id[9]:=1;
+   writer64.Header.elf_entry:=0;
+   writer64.Header.elf_machine:=ldarch;
+   writer64.Header.elf_flags:=templist2.SecFlag;
+   writer64.Header.elf_header_size:=sizeof(elf64_header);
+   writer64.Header.elf_version:=1;
+   writer64.Header.elf_type:=elf_type_relocatable;
+   writer64.Header.elf_program_header_number:=0;
+   writer64.Header.elf_program_header_offset:=0;
+   writer64.Header.elf_program_header_size:=0;
+   writer64.Header.elf_section_header_size:=sizeof(elf64_section_header);
+   writer64.Header.elf_section_header_offset:=startoffset;
+   writer64.Header.elf_section_header_number:=templist2.SecCount+1;
+   writer64.Header.elf_section_header_string_table_index:=templist2.SecCount;
+   SetLength(writer64.SectionHeader,templist2.SecCount+1);
+   SetLength(writer64.Content,templist2.SecCount+1);
+   writer64.SectionHeader[0].section_header_name:=0;
+   writer64.SectionHeader[0].section_header_address:=0;
+   writer64.SectionHeader[0].section_header_address_align:=0;
+   writer64.SectionHeader[0].section_header_entry_size:=0;
+   writer64.SectionHeader[0].section_header_flags:=0;
+   writer64.SectionHeader[0].section_header_link:=0;
+   writer64.SectionHeader[0].section_header_offset:=0;
+   writer64.SectionHeader[0].section_header_type:=0;
+   writer64.Content[0]:=nil;
+   i:=1;
+   while(i<=templist2.SecCount)do
+    begin
+     writer64.SectionHeader[i].section_header_name:=templist2.SecNameIndex[i-1];
+     writer64.Content[i]:=templist2.SecContent[i-1];
+     tempstr:=ld_section_get_prefix(templist2.SecName[i-1]);
+     if(tempstr='.symtab') then
+      begin
+       writer64.SectionHeader[i].section_header_address_align:=ldbit shl 2;
+      end
+     else if(tempstr='.strtab') or (tempstr='.shstrtab') then
+      begin
+       writer64.SectionHeader[i].section_header_address_align:=1;
+      end
+     else
+      begin
+       writer64.SectionHeader[i].section_header_address_align:=ldbit shl 2;
+      end;
+     writer64.SectionHeader[i].section_header_address:=0;
+     writer64.SectionHeader[i].section_header_offset:=templist2.SecOffset[i-1];
+     writer64.SectionHeader[i].section_header_size:=templist2.SecSize[i-1];
+     if(tempstr='.text') or (tempstr='.init')
+     or(tempstr='.fini') then
+      begin
+       writer64.SectionHeader[i].section_header_flags:=
+       elf_section_flag_executable or elf_section_flag_alloc;
+      end
+     else if(tempstr='.rela') or (tempstr='.rel') then
+      begin
+       writer64.SectionHeader[i].section_header_flags:=elf_section_flag_info_link;
+       writer64.SectionHeader[i].section_header_info:=
+       templist1.SecNowIndex[templist1.SecInfo[templist2.SecOrgIndex[i-1]-1]];
+       writer64.SectionHeader[i].section_header_link:=
+       templist1.SecNowIndex[templist1.SecInfo[templist2.SecOrgIndex[i-1]-1]];
+      end
+     else if(tempstr<>'.debug_frame') then
+      begin
+       writer64.SectionHeader[i].section_header_flags:=elf_section_flag_write or elf_section_flag_alloc;
+      end;
+     if(tempstr='.symtab') then
+      begin
+       writer64.SectionHeader[i].section_header_link:=strtabindex;
+      end;
+     writer64.SectionHeader[i].section_header_size:=templist2.SecSize[i-1];
+     if(tempstr='.rela.') then
+      begin
+       writer64.SectionHeader[i].section_header_entry_size:=sizeof(elf64_rela);
+      end
+     else if(tempstr='.rel') then
+      begin
+       writer64.SectionHeader[i].section_header_entry_size:=sizeof(elf64_rel);
+      end
+     else
+      begin
+       writer64.SectionHeader[i].section_header_entry_size:=0;
+      end;
+     if(tempstr='.text') or (tempstr='.init') or (tempstr='.fini') or (tempstr='.debug_frame') then
+      begin
+       writer64.SectionHeader[i].section_header_type:=elf_section_type_progbit;
+      end
+     else if(tempstr='.init_array') then
+      begin
+       writer64.SectionHeader[i].section_header_type:=elf_section_type_init_array;
+      end
+     else if(tempstr='.fini_array') then
+      begin
+       writer64.SectionHeader[i].section_header_type:=elf_section_type_fini_array;
+      end
+     else if(tempstr='.preinit_array') then
+      begin
+       writer64.SectionHeader[i].section_header_type:=elf_section_type_preinit_array;
+      end
+     else if(tempstr='.rela') then
+      begin
+       writer64.SectionHeader[i].section_header_type:=elf_section_type_rela;
+      end
+     else if(tempstr='.rel') then
+      begin
+       writer64.SectionHeader[i].section_header_type:=elf_section_type_reloc;
+      end
+     else if(tempstr='.bss') or (tempstr='.tbss') then
+      begin
+       writer64.SectionHeader[i].section_header_type:=elf_section_type_nobit;
+      end
+     else if(tempstr='.symtab') then
+      begin
+       writer64.SectionHeader[i].section_header_type:=elf_section_type_symtab;
+      end
+     else if(tempstr='.strtab') or (tempstr='.shstrtab') then
+      begin
+       writer64.SectionHeader[i].section_header_type:=elf_section_type_strtab;
+      end
+     else
+      begin
+       writer64.SectionHeader[i].section_header_type:=elf_section_type_progbit;
+      end;
+     inc(i);
+    end;
+   {Create the memory of elf}
+   elfbinary:=tydq_allocmem(writer64.Header.elf_section_header_offset+
+   writer64.Header.elf_section_header_number*writer64.Header.elf_section_header_size);
+   writeoffset:=0;
+   tydq_move(writer64.Header,(elfbinary+writeoffset)^,sizeof(elf64_header));
+   i:=1;
+   while(i<=writer64.Header.elf_section_header_number)do
+    begin
+     if(writer64.Content[i-1]<>nil) then
+      begin
+       writeoffset:=writer64.SectionHeader[i-1].section_header_offset;
+       tydq_move(writer64.Content[i-1]^,(elfbinary+writeoffset)^,
+       writer64.SectionHeader[i-1].section_header_size);
+      end;
+     inc(i);
+    end;
+   i:=1; writeoffset:=writer64.Header.elf_section_header_offset;
+   tydq_move(writer64.SectionHeader[0],(elfbinary+writeoffset)^,sizeof(elf64_section_header));
+   inc(writeoffset,sizeof(elf64_section_header));
+   while(i<=writer64.Header.elf_section_header_number-1)do
+    begin
+     tydq_move(writer64.SectionHeader[i],(elfbinary+writeoffset)^,sizeof(elf64_section_header));
+     inc(writeoffset,sizeof(elf64_section_header));
+     inc(i);
+    end;
+   ld_io_write(fn,1,elfbinary^,writer64.Header.elf_section_header_offset+
+   writer64.Header.elf_section_header_number*writer64.Header.elf_section_header_size);
   end;
 end;
 function ld_link_file(var objlist:ld_object_file_list;EntryName:string;
@@ -1574,13 +2933,13 @@ begin
    templist1.ObjFile[i-1].SecRelCount:=0; templist1.ObjFile[i-1].SecRelaCount:=0;
    SetLength(templist1.ObjFile[i-1].SecRel,objlist.item[i-1].Ptr.relcount);
    SetLength(templist1.ObjFile[i-1].SecRela,objlist.item[i-1].Ptr.relacount);
-   if(objlist.bit-1=1) then
+   if(objlist.bit=2) then
     begin
      count:=objlist.item[i-1].Ptr.HdrPtr.hdr32^.elf_section_header_number;
      templist1.SecFlag:=templist1.SecFlag or objlist.item[i-1].Ptr.HdrPtr.hdr32^.elf_flags;
      {Handle the Symbol Table First}
      startaddr:=objlist.item[i-1].Ptr.symptr.sym32;
-     tempptr:=startaddr+sizeof(elf32_symbol_table_entry); offset:=0;
+     tempptr:=startaddr; offset:=0;
      templist1.ObjFile[i-1].SymTable.SymbolCount:=objlist.item[i-1].Ptr.symcount;
      TempList1.ObjFile[i-1].SymTable.SymbolVaildForLink:=tydq_getmem(objlist.item[i-1].Ptr.symcount);
      SetLength(TempList1.ObjFile[i-1].SymTable.SymbolIndex,objlist.item[i-1].Ptr.symcount);
@@ -1597,7 +2956,7 @@ begin
        elf_symbol_type_type(Pelf32_symbol_table_entry(tempptr+offset)^.symbol_info);
        TempList1.ObjFile[i-1].SymTable.SymbolIndex[k-1]:=
        Pelf32_symbol_table_entry(tempptr+offset)^.symbol_section_index;
-       if(TempList1.ObjFile[i-1].SymTable.SymbolIndex[k-1]<>0)
+       if(TempList1.ObjFile[i-1].SymTable.SymbolIndex[k-1]>0)
        and(TempList1.ObjFile[i-1].SymTable.SymbolIndex[k-1]<=Word($FFF0)) then
         begin
          TempList1.ObjFile[i-1].SymTable.SymbolSection[k-1]:=
@@ -1754,7 +3113,7 @@ begin
         end;
       end;
     end
-   else if(objlist.bit-1=2) then
+   else if(objlist.bit=3) then
     begin
      count:=objlist.item[i-1].Ptr.HdrPtr.hdr64^.elf_section_header_number;
      templist1.SecFlag:=templist1.SecFlag or objlist.item[i-1].Ptr.HdrPtr.hdr64^.elf_flags;
@@ -1953,10 +3312,8 @@ begin
    for j:=1 to templist1.ObjFile[i-1].SymTable.SymbolCount do
     begin
      if(TempList1.ObjFile[i-1].SymTable.SymbolVaildForLink[j-1]=false) then continue;
-     if(templist1.ObjFile[i-1].SymTable.SymbolName[j-1][1]='$') then continue;
      if(templist1.ObjFile[i-1].SymTable.SymbolName[j-1]='') then continue;
-     if(templist1.ObjFile[i-1].SecType[templist1.ObjFile[i-1].SymTable.SymbolIndex[j-1]]=0)
-     then continue;
+     if(templist1.ObjFile[i-1].SymTable.SymbolName[j-1][1]='$') then continue;
      inc(middlelist.SymTable.SymbolCount);
      middlelist.SymTable.SymbolQuotedByMain[middlelist.SymTable.SymbolCount-1]:=false;
      middlelist.SymTable.SymbolName[middlelist.SymTable.SymbolCount-1]:=
@@ -2174,7 +3531,7 @@ begin
  {SmartLink the sections}
  if(SmartLinking) then
   begin
-   ld_handle_symbol_table(middlelist,EntryHash,SmartLinking,hashtable,hashtable2,
+   ld_handle_symbol_table(middlelist,EntryHash,hashtable,hashtable2,
    relcount,hashtable3,relacount,hashtable4);
    for i:=1 to middlelist.SymTable.SymbolCount do
     begin

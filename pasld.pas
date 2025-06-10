@@ -185,7 +185,8 @@ begin
  'all dynamic libraries needed].');
  writeln('             include the needed dynamic library path specified by you.');
  writeln('--alignment [alignment in file segment]');
- writeln('             Specify the alignment about output file(You can input page as alignment 4096.');
+ writeln('             Specify the alignment about output file(You can input page as alignment 4096).');
+ writeln('             You can also input largepage as alignment 65536.');
  writeln('--dynamic-linker-path [the dynamic linker path specified by you]');
  writeln('             The dynamic linker path the executable file needed to use.');
  writeln('--signature [the signature you want to add to the file]');
@@ -202,6 +203,8 @@ begin
  writeln('             The option to generate executable file.');
  writeln('--dynamic-library');
  writeln('             The option to generate dynamic library file.');
+ writeln('--relocatable');
+ writeln('             The option to generate relocatable file.');
  writeln('--efi-application');
  writeln('             The option to generate UEFI Application file.');
  writeln('--efi-boot-driver');
@@ -220,8 +223,6 @@ begin
  writeln('             Change the linker accelerate block power to block size you have assigned.');
  writeln('--verbose');
  writeln('             if it is set,it will generate verbose information.');
- writeln('--verbose-debug');
- writeln('             if it is set,it will generate verbose debug information.');
  writeln('--start-address');
  writeln('             set the section start address of the binary file.');
  writeln('--version');
@@ -346,6 +347,7 @@ begin
    else if(LowerCase(ParamStr(i))='--alignment') then
     begin
      if(LowerCase(ParamStr(i+1))='page') then Result.align:=$1000
+     else if(LowerCase(ParamStr(i+1))='largepage') then Result.align:=$10000
      else Result.align:=StrToInt(ParamStr(i+1));
      inc(i);
     end
@@ -381,17 +383,21 @@ begin
     begin
      Result.ExecutableType:=2;
     end
-   else if(LowerCase(ParamStr(i))='--efi-application') and (Result.ExecutableType=0) then
+   else if(LowerCase(ParamStr(i))='--relocatable') and (Result.ExecutableType=0) then
     begin
      Result.ExecutableType:=3;
     end
-   else if(LowerCase(ParamStr(i))='--efi-boot-driver') and (Result.ExecutableType=0) then
+   else if(LowerCase(ParamStr(i))='--efi-application') and (Result.ExecutableType=0) then
     begin
      Result.ExecutableType:=4;
     end
-   else if(LowerCase(ParamStr(i))='--efi-runtime-driver') and (Result.ExecutableType=0) then
+   else if(LowerCase(ParamStr(i))='--efi-boot-driver') and (Result.ExecutableType=0) then
     begin
      Result.ExecutableType:=5;
+    end
+   else if(LowerCase(ParamStr(i))='--efi-runtime-driver') and (Result.ExecutableType=0) then
+    begin
+     Result.ExecutableType:=6;
     end
    else if(LowerCase(ParamStr(i))='--entry-point') then
     begin
@@ -563,6 +569,15 @@ begin
    param.DynamicLinker,param.Signature,param.startaddress);
    if(param.verbose) then writeln('File '+param.OutputFileName+' generated!');
   end
+ else if(param.ExecutableType=3) then
+  begin
+   if(param.verbose) and (param.SmartLinking) then
+   writeln('SmartLinking Relocatable ELF Files......')
+   else if(param.verbose) then
+   writeln('Linking Relocatable ELF Files......');
+   ld_generate_relocatable_file(param.OutputFileName,objlist,param.EntryName,param.SmartLinking);
+   if(param.verbose) then writeln('File '+param.OutputFileName+' generated!');
+  end
  else
   begin
    if(param.verbose) then writeln('Linking ELF Files......');
@@ -587,3 +602,4 @@ begin
   end;
  pasld_execute(param);
 end.
+
