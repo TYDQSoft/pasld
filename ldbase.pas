@@ -110,6 +110,7 @@ type natuint=SizeUint;
                                  AdjustStatus:array of byte;
                                  end;
      ld_object_file_item=packed record
+                         SecBaseSection:array of boolean;
                          SecUsed:array of boolean;
                          SecName:array of string;
                          SecContent:array of Pointer;
@@ -151,6 +152,7 @@ type natuint=SizeUint;
                             end;
      ld_object_file_temp_symbol_table=packed record
                                       SymbolQuotedByMain:Pboolean;
+                                      SymbolBaseSection:Pboolean;
                                       SymbolFileIndex:PNatuint;
                                       SymbolIndex:Pword;
                                       SymbolSymIndex:PNatuint;
@@ -333,6 +335,7 @@ type natuint=SizeUint;
      ld_relocatable_file_stage_1=packed record
                                  SecFlag:Natuint;
                                  SecFileIndex:array of Natuint;
+                                 SecBaseSection:array of boolean;
                                  SecUsed:array of boolean;
                                  SecName:array of string;
                                  SecHash:array of Natuint;
@@ -352,6 +355,7 @@ type natuint=SizeUint;
                                     end;
      ld_relocatable_file_temporary=packed record
                                    Activated:array of boolean;
+                                   BaseSection:array of boolean;
                                    SectionName:array of string;
                                    SectionIndex:array of Natuint;
                                    SectionHash:array of Natuint;
@@ -1550,8 +1554,7 @@ begin
  if(i<>0) then
   begin
    middlelist.Activated[i-1]:=true;
-   if(middlelist.SectionType[i-1]<>1)and(middlelist.SectionType[i-1]<>5)
-   and(middlelist.SectionType[i-1]<>9)and(middlelist.SectionType[i-1]<>17) then exit;
+   if(middlelist.BaseSection[i-1]) then exit;
    secarray:=ld_search_for_index_array(symsectable,
    dynnatuintarray(middlelist.SectionHash),middlelist.SectionHash[i-1]);
    for j:=1 to length(secarray) do
@@ -1607,10 +1610,7 @@ begin
  if(i<>0) then
   begin
    middlelist.symTable.SymbolQuotedByMain[i-1]:=true;
-   if(middlelist.symTable.SymbolSectionType[i-1]<>1)
-   and(middlelist.symTable.SymbolSectionType[i-1]<>3)
-   and(middlelist.symTable.SymbolSectionType[i-1]<>5)
-   and(middlelist.symTable.SymbolSectionType[i-1]<>11) then exit;
+   if(middlelist.SymTable.SymbolBaseSection[i-1]) then exit;
    secarray:=ld_search_for_index_array(symsectable,
    dynnatuintarray(middlelist.SymTable.SymbolSectionHash),middlelist.SymTable.SymbolSectionHash[i-1]);
    for j:=1 to length(secarray) do
@@ -1805,6 +1805,7 @@ begin
      SymCount[i-1]:=totalsymbolcount;
      {Then Handle the other sections}
      SetLength(templist1.SecFileIndex,totalsectioncount+sectioncount);
+     SetLength(templist1.SecBaseSection,totalsectioncount+sectioncount);
      SetLength(templist1.SecUsed,totalsectioncount+sectioncount);
      SetLength(templist1.SecName,totalsectioncount+sectioncount);
      SetLength(templist1.SecHash,totalsectioncount+sectioncount);
@@ -1841,7 +1842,10 @@ begin
          if(faststrcomp_segment(templist1.SecName[totalsectioncount+j-1],1,length(Order[k-1]),
          Order[k-1])) then
           begin
-           templist1.SecType[totalsectioncount+j-1]:=k; break;
+           templist1.SecType[totalsectioncount+j-1]:=k;
+           if(templist1.SecName[totalsectioncount+j-1]=Order[k-1]) then
+           templist1.SecBaseSection[totalsectioncount+j-1]:=true;
+           break;
           end;
         end;
        if(Pelf32_section_header(sectionptr.sec32ptr+j-1)^.section_header_info=0) then
@@ -1949,6 +1953,7 @@ begin
      SymCount[i-1]:=totalsymbolcount;
      {Then Handle the other sections}
      SetLength(templist1.SecFileIndex,totalsectioncount+sectioncount);
+     SetLength(templist1.SecBaseSection,totalsectioncount+sectioncount);
      SetLength(templist1.SecUsed,totalsectioncount+sectioncount);
      SetLength(templist1.SecName,totalsectioncount+sectioncount);
      SetLength(templist1.SecHash,totalsectioncount+sectioncount);
@@ -1985,7 +1990,10 @@ begin
          if(faststrcomp_segment(templist1.SecName[totalsectioncount+j-1],1,length(Order[k-1]),
          Order[k-1])) then
           begin
-           templist1.SecType[totalsectioncount+j-1]:=k; break;
+           templist1.SecType[totalsectioncount+j-1]:=k;
+           if(templist1.SecName[totalsectioncount+j-1]=Order[k-1]) then
+           templist1.SecBaseSection[totalsectioncount+j-1]:=true;
+           break;
           end;
         end;
        if(Pelf64_section_header(sectionptr.sec64ptr+j-1)^.section_header_info=0) then
@@ -2013,6 +2021,8 @@ begin
   end;
  {Then Generate the temporary variables}
  templist1.SymTable.SymbolCount:=totalsymbolcount;
+ middlelist.Count:=0;
+ SetLength(middlelist.BaseSection,templist1.SymTable.SymbolCount);
  SetLength(middlelist.SectionIndex,templist1.SymTable.SymbolCount);
  SetLength(middlelist.NameHash,templist1.SymTable.SymbolCount);
  SetLength(middlelist.SectionHash,templist1.SymTable.SymbolCount);
@@ -2022,7 +2032,7 @@ begin
  SetLength(middlelist.SymbolIndex,templist1.SymTable.SymbolCount);
  SetLength(middlelist.InfoIndex,templist1.SymTable.SymbolCount);
  SetLength(middlelist.Activated,templist1.SymTable.SymbolCount);
- middlelist.Count:=0; SecPin:=1;
+ SecPin:=1;
  for i:=1 to templist1.SymTable.SymbolCount do
   begin
    if(templist1.SymTable.SymbolVaildForLink[i-1]=false) then continue;
@@ -2049,6 +2059,8 @@ begin
    middlelist.SectionIndex[middlelist.count-1]:=tempnum2+templist1.SymTable.SymbolIndex[i-1];
    middlelist.SectionType[middlelist.Count-1]:=templist1.SecType[middlelist.SectionIndex[middlelist.count-1]];
    middlelist.InfoIndex[middlelist.count-1]:=templist1.SecInfo[middlelist.SectionIndex[middlelist.count-1]];
+   middlelist.BaseSection[middlelist.count-1]:=
+   templist1.SecBaseSection[middlelist.SectionIndex[middlelist.count-1]];
   end;
  {Then Generate the hash table for symbol name and related sections}
  hashtable1.BucketCount:=middlelist.Count*2+1;
@@ -3007,6 +3019,7 @@ begin
       end;
      inc(totalsymcount,objlist.item[i-1].Ptr.symcount);
      TempList1.ObjFile[i-1].SecCount:=count;
+     SetLength(Templist1.ObjFile[i-1].SecBaseSection,count);
      SetLength(TempList1.ObjFile[i-1].SecUsed,count);
      SetLength(TempList1.ObjFile[i-1].SecName,count);
      SetLength(TempList1.ObjFile[i-1].SecSize,count);
@@ -3029,6 +3042,8 @@ begin
           begin
            inc(NeedSize[k-1],size); inc(NeedCount[k-1],1);
            TempList1.ObjFile[i-1].SecType[j-1]:=k;
+           if(TempList1.ObjFile[i-1].SecName[j-1]=Order[k-1]) then
+           TempList1.ObjFile[i-1].SecBaseSection[j-1]:=true;
            break;
           end;
         end;
@@ -3187,6 +3202,7 @@ begin
       end;
      inc(totalsymcount,objlist.item[i-1].Ptr.symcount);
      TempList1.ObjFile[i-1].SecCount:=count;
+     SetLength(Templist1.ObjFile[i-1].SecBaseSection,count);
      SetLength(TempList1.ObjFile[i-1].SecUsed,count);
      SetLength(TempList1.ObjFile[i-1].SecName,count);
      SetLength(TempList1.ObjFile[i-1].SecSize,count);
@@ -3211,6 +3227,8 @@ begin
           begin
            inc(NeedSize[k-1],size); inc(NeedCount[k-1],1);
            TempList1.ObjFile[i-1].SecType[j-1]:=k;
+           if(TempList1.ObjFile[i-1].SecName[j-1]=Order[k-1]) then
+           TempList1.ObjFile[i-1].SecBaseSection[j-1]:=true;
            break;
           end;
         end;
@@ -3307,6 +3325,7 @@ begin
  middlelist.SymTable.SymbolFileIndex:=tydq_getmem(totalsymcount*sizeof(Natuint));
  middlelist.SymTable.SymbolIndex:=tydq_getmem(totalsymcount*sizeof(word));
  middlelist.SymTable.SymbolSymIndex:=tydq_getmem(totalsymcount*sizeof(Natuint));
+ middlelist.SymTable.SymbolBaseSection:=tydq_getmem(totalsymcount);
  for i:=1 to templist1.Count do
   begin
    for j:=1 to templist1.ObjFile[i-1].SymTable.SymbolCount do
@@ -3328,6 +3347,8 @@ begin
      middlelist.SymTable.SymbolFileIndex[middlelist.SymTable.SymbolCount-1]:=i;
      middlelist.SymTable.SymbolIndex[middlelist.SymTable.SymbolCount-1]:=
      templist1.ObjFile[i-1].SymTable.SymbolIndex[j-1];
+     if(TempList1.ObjFile[i-1].SecBaseSection[templist1.ObjFile[i-1].SymTable.SymbolIndex[j-1]]) then
+     middlelist.SymTable.SymbolBaseSection[middlelist.SymTable.SymbolCount-1]:=true;
      middlelist.SymTable.SymbolType[middlelist.SymTable.SymbolCount-1]:=
      ((templist1.ObjFile[i-1].SymTable.SymbolType[j-1]<>0) and
      (templist1.ObjFile[i-1].SymTable.SymbolBinding[j-1]=elf_symbol_bind_global))
@@ -3419,7 +3440,8 @@ begin
        middlelist.SecRel[middlelist.SecRelCount-1].SymName[count-1]:=
        TempList1.ObjFile[i-1].SymTable.SymbolName[templist1.ObjFile[i-1].SecRel[j-1].Symbol[k-1]];
        middlelist.SecRel[middlelist.SecRelCount-1].SymHash[count-1]:=
-       generate_hash_from_string(TempList1.ObjFile[i-1].SymTable.SymbolName[templist1.ObjFile[i-1].SecRel[j-1].Symbol[k-1]]);
+       generate_hash_from_string(
+       TempList1.ObjFile[i-1].SymTable.SymbolName[templist1.ObjFile[i-1].SecRel[j-1].Symbol[k-1]]);
        middlelist.SecRel[middlelist.SecRelCount-1].SymType[count-1]:=
        templist1.ObjFile[i-1].SecRel[j-1].SymType[k-1];
        inc(relcount);
@@ -3717,7 +3739,8 @@ begin
      while(n<=length(secarray)) do
       begin
        if(middlelist.SecRel[i-1].SymHash[j-1]
-       =middlelist.SymTable.SymbolNameHash[secarray[n-1]-1]) then break;
+       =middlelist.SymTable.SymbolNameHash[secarray[n-1]-1])
+       and(middlelist.SymTable.SymbolQuotedByMain[secarray[n-1]-1]=SmartLinking) then break;
        inc(n);
       end;
      if(n>length(secarray)) then d:=0 else d:=secarray[n-1];
@@ -5158,7 +5181,9 @@ begin
      n:=1;
      while(n<=length(secarray)) do
       begin
-       if(middlelist.SymTable.SymbolQuotedByMain[secarray[n-1]-1]=SmartLinking) then break;
+       if(middlelist.SecRela[i-1].SymHash[j-1]
+       =middlelist.SymTable.SymbolNameHash[secarray[n-1]-1])
+       and(middlelist.SymTable.SymbolQuotedByMain[secarray[n-1]-1]=SmartLinking) then break;
        inc(n);
       end;
      if(n>length(secarray)) then d:=0 else d:=secarray[n-1];
@@ -11272,9 +11297,9 @@ begin
    writer.PeHeader.OptionalHeader32.SubSystem:=pe_image_subsystem_efi_application
    else if(format=ld_format_efi_boot_driver) then
    writer.PeHeader.OptionalHeader32.SubSystem:=pe_image_subsystem_efi_boot_service_driver
-   else if(format=ld_format_efi_application) then
+   else if(format=ld_format_efi_runtime_driver) then
    writer.PeHeader.OptionalHeader32.SubSystem:=pe_image_subsystem_efi_runtime_service_driver
-   else if(format=ld_format_efi_boot_driver) then
+   else if(format=ld_format_efi_rom) then
    writer.PeHeader.OptionalHeader32.SubSystem:=pe_image_subsystem_efi_rom;
    writer.PeHeader.OptionalHeader32.SizeOfHeapCommit:=0;
    writer.PeHeader.OptionalHeader32.SizeOfHeapReserve:=0;
@@ -11482,9 +11507,9 @@ begin
    writer.PeHeader.OptionalHeader64.SubSystem:=pe_image_subsystem_efi_application
    else if(format=ld_format_efi_boot_driver) then
    writer.PeHeader.OptionalHeader64.SubSystem:=pe_image_subsystem_efi_boot_service_driver
-   else if(format=ld_format_efi_application) then
+   else if(format=ld_format_efi_runtime_driver) then
    writer.PeHeader.OptionalHeader64.SubSystem:=pe_image_subsystem_efi_runtime_service_driver
-   else if(format=ld_format_efi_boot_driver) then
+   else if(format=ld_format_efi_rom) then
    writer.PeHeader.OptionalHeader64.SubSystem:=pe_image_subsystem_efi_rom;
    writer.PeHeader.OptionalHeader64.SizeOfHeapCommit:=0;
    writer.PeHeader.OptionalHeader64.SizeOfHeapReserve:=0;

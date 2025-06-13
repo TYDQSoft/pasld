@@ -114,6 +114,7 @@
 	 BUNAME="-XP"$CUSTOMBIN
 	fi
 	/home/tydq/source/compiler/ppc$CARCH -Mobjfpc -n -O3 -Si -Sc -Sg -Xd -Ur -CX -XXs -Xi -Fu/home/tydq/source/compiler/$CARCHNAME/units/$CARCHNAME-linux -Fu/home/tydq/source/rtl/units/$CARCHNAME-linux -Fu/home/tydq/source/packages/rtl-objpas/units/$CARCHNAME-linux -dcpu$BITS -Cg pasld.pas
-	rm *.o *.ppu 
+	rm *.ppu 
+	rm *.o
 	./pasld
 
