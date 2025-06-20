@@ -1546,6 +1546,7 @@ const elf_magic:array[1..4] of char=(#$7F,'E','L','F');
       elf_reloc_loongarch_tls_global_dynamic_high_20bit=98;
       elf_reloc_loongarch_32_pc_relative=99;
       elf_reloc_loongarch_relax=100;
+      elf_reloc_loongarch_align=102;
       {ELF RISC-V Type}
       elf_riscv_b_type=1;
       elf_riscv_cb_type=2;

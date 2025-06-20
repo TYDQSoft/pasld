@@ -3727,6 +3727,8 @@ begin
       begin
        templist2.Adjust.AdjustRelax[templist2.Adjust.Count-1]:=true; continue;
       end
+      else if(ldarch=elf_machine_loongarch) and
+     (middlelist.SecRel[i-1].SymType[j-1]=elf_reloc_loongarch_align) then continue
      else if(ldarch=elf_machine_loongarch) and
      (middlelist.SecRel[i-1].SymType[j-1]=elf_reloc_loongarch_relax) then
       begin
@@ -5170,6 +5172,8 @@ begin
       begin
        templist2.Adjust.AdjustRelax[templist2.Adjust.Count-1]:=true; continue;
       end
+     else if(ldarch=elf_machine_loongarch) and
+     (middlelist.SecRela[i-1].SymType[j-1]=elf_reloc_loongarch_align) then continue
      else if(ldarch=elf_machine_loongarch) and
      (middlelist.SecRela[i-1].SymType[j-1]=elf_reloc_loongarch_relax) then
       begin
