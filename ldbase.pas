@@ -3676,7 +3676,7 @@ begin
          templist2.SecContent[j-1].SecOffset[k-1]+templist1.ObjFile[m-1].SymTable.SymbolValue[n-1];
         end;
       end
-     else if(templist1.ObjFile[m-1].SymTable.SymbolType[n-1]>0) then
+     else if(a=0) and (templist1.ObjFile[m-1].SymTable.SymbolType[n-1]>0) then
       begin
        templist2.SymTable.SymbolIndex[templist2.SymTable.SymbolCount-1]:=0;
        templist2.SymTable.SymbolValue[templist2.SymTable.SymbolCount-1]:=0;
@@ -6823,6 +6823,7 @@ begin
  SetLength(tempfinal.DynSym.SymbolName,ldfile.SymTable.SymbolCount);
  SetLength(tempfinal.DynSym.SymbolType,ldfile.SymTable.SymbolCount);
  SetLength(tempfinal.DynSym.SymbolVisible,ldfile.SymTable.SymbolCount);
+ SetLength(tempfinal.DynSym.SymbolIndex,ldfile.SymTable.SymbolCount);
  for i:=1 to ldfile.SymTable.SymbolCount do
   begin
    if(ldfile.SymTable.SymbolIndex[i-1]=0) and (ldfile.SymTable.SymbolType[i-1]>0) then
@@ -8773,6 +8774,10 @@ begin
      inc(i); continue;
     end;
    index:=ldfile.SymTable.SymbolIndex[i-1];
+   if(index=0) then
+    begin
+     inc(i); continue;
+    end;
    if(ldfile.SecName[index-1]='.debug_frame') and (debugframe=false) then
     begin
      inc(i); continue;
